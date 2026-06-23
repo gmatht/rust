@@ -2198,6 +2198,9 @@ options! {
         "compile the program with profiling instrumentation"),
     profile_use: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
         "use the given `.profdata` file for profile-guided optimization"),
+    pgo_cold_func_opt: Option<String> = (None, parse_opt_string, [TRACKED],
+        "function attribute to apply to cold functions as determined by PGO \
+         (optsize, minsize, optnone, or default)"),
     #[rustc_lint_opt_deny_field_access("use `Session::relocation_model` instead of this field")]
     relocation_model: Option<RelocModel> = (None, parse_relocation_model, [TRACKED],
         "control generation of position-independent code (PIC) \
