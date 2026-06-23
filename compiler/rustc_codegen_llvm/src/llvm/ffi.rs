@@ -2486,6 +2486,7 @@ unsafe extern "C" {
         InstrumentCoverage: bool,
         InstrProfileOutput: *const c_char,
         PGOSampleUsePath: *const c_char,
+        PgoColdFuncOpt: *const c_char,
         DebugInfoForProfiling: bool,
         llvm_selfprofiler: *mut c_void,
         begin_callback: SelfProfileBeforePassCallback,

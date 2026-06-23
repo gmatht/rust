@@ -603,7 +603,7 @@ extern "C" LLVMRustResult LLVMRustOptimize(
     LLVMRustSanitizerOptions *SanitizerOptions, const char *PGOGenPath,
     const char *PGOUsePath, bool InstrumentCoverage,
     const char *InstrProfileOutput, const char *PGOSampleUsePath,
-    bool DebugInfoForProfiling, void *LlvmSelfProfiler,
+    const char *PgoColdFuncOpt, bool DebugInfoForProfiling, void *LlvmSelfProfiler,
     LLVMRustSelfProfileBeforePassCallback BeforePassCallback,
     LLVMRustSelfProfileAfterPassCallback AfterPassCallback,
     const char *ExtraPasses, size_t ExtraPassesLen, const char *LLVMPlugins,
@@ -626,6 +626,19 @@ extern "C" LLVMRustResult LLVMRustOptimize(
                                        BeforePassCallback, AfterPassCallback);
   }
 
+  auto parseColdFuncOpt = [](const char *Opt) -> PGOOptions::ColdFuncOpt {
+    if (!Opt || !*Opt)
+      return PGOOptions::ColdFuncOpt::Default;
+    if (strcmp(Opt, "optsize") == 0)
+      return PGOOptions::ColdFuncOpt::OptSize;
+    if (strcmp(Opt, "minsize") == 0)
+      return PGOOptions::ColdFuncOpt::MinSize;
+    if (strcmp(Opt, "optnone") == 0)
+      return PGOOptions::ColdFuncOpt::OptNone;
+    return PGOOptions::ColdFuncOpt::Default;
+  };
+  PGOOptions::ColdFuncOpt ColdFuncType = parseColdFuncOpt(PgoColdFuncOpt);
+
   std::optional<PGOOptions> PGOOpt;
 #if LLVM_VERSION_LT(22, 0)
   auto FS = vfs::getRealFileSystem();
@@ -638,7 +651,7 @@ extern "C" LLVMRustResult LLVMRustOptimize(
 #else
         PGOGenPath, "", "", "", FS, PGOOptions::IRInstr, PGOOptions::NoCSAction,
 #endif
-        PGOOptions::ColdFuncOpt::Default, DebugInfoForProfiling);
+        ColdFuncType, DebugInfoForProfiling);
   } else if (PGOUsePath) {
     assert(!PGOSampleUsePath);
     PGOOpt = PGOOptions(
@@ -647,7 +660,7 @@ extern "C" LLVMRustResult LLVMRustOptimize(
 #else
         PGOUsePath, "", "", "", FS, PGOOptions::IRUse, PGOOptions::NoCSAction,
 #endif
-        PGOOptions::ColdFuncOpt::Default, DebugInfoForProfiling);
+        ColdFuncType, DebugInfoForProfiling);
   } else if (PGOSampleUsePath) {
     PGOOpt =
 #if LLVM_VERSION_GE(22, 0)
@@ -655,7 +668,7 @@ extern "C" LLVMRustResult LLVMRustOptimize(
 #else
         PGOOptions(PGOSampleUsePath, "", "", "", FS, PGOOptions::SampleUse,
 #endif
-                   PGOOptions::NoCSAction, PGOOptions::ColdFuncOpt::Default,
+                   PGOOptions::NoCSAction, ColdFuncType,
                    DebugInfoForProfiling);
   } else if (DebugInfoForProfiling) {
     PGOOpt = PGOOptions(
@@ -664,7 +677,7 @@ extern "C" LLVMRustResult LLVMRustOptimize(
 #else
         "", "", "", "", FS, PGOOptions::NoAction, PGOOptions::NoCSAction,
 #endif
-        PGOOptions::ColdFuncOpt::Default, DebugInfoForProfiling);
+        ColdFuncType, DebugInfoForProfiling);
   }
 
   auto PB = PassBuilder(TM, PTO, PGOOpt, &PIC);
