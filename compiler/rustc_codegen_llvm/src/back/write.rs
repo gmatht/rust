@@ -532,10 +532,7 @@ fn get_instr_profile_output_path(config: &ModuleConfig) -> Option<CString> {
 }
 
 fn get_pgo_cold_func_opt(config: &ModuleConfig) -> Option<CString> {
-    config
-        .pgo_cold_func_opt
-        .as_ref()
-        .map(|s| CString::new(s.as_bytes()).unwrap())
+    config.pgo_cold_func_opt.as_ref().map(|s| CString::new(s.as_bytes()).unwrap())
 }
 
 // PreAD will run llvm opts but disable size increasing opts (vectorization, loop unrolling)
