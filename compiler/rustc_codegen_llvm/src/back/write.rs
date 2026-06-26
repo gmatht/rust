@@ -535,6 +535,10 @@ fn get_pgo_cold_func_opt(config: &ModuleConfig) -> Option<CString> {
     config.pgo_cold_func_opt.as_ref().map(|s| CString::new(s.as_bytes()).unwrap())
 }
 
+fn get_pgo_hot_func_opt(config: &ModuleConfig) -> Option<CString> {
+    config.pgo_hot_func_opt.as_ref().map(|s| CString::new(s.as_bytes()).unwrap())
+}
+
 // PreAD will run llvm opts but disable size increasing opts (vectorization, loop unrolling)
 // DuringAD is the same as above, but also runs the enzyme opt and autodiff passes.
 // PostAD will run all opts, including size increasing opts.
@@ -796,6 +800,7 @@ pub(crate) unsafe fn llvm_optimize(
             instr_profile_output_path.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
             pgo_sample_use_path.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
             get_pgo_cold_func_opt(config).as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+            get_pgo_hot_func_opt(config).as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
             config.debug_info_for_profiling,
             llvm_selfprofiler,
             selfprofile_before_pass_callback,

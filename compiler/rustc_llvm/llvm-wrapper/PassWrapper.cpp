@@ -5,6 +5,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/Lint.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #if LLVM_VERSION_GE(22, 0)
 #include "llvm/Analysis/RuntimeLibcallInfo.h"
@@ -603,7 +604,7 @@ extern "C" LLVMRustResult LLVMRustOptimize(
     LLVMRustSanitizerOptions *SanitizerOptions, const char *PGOGenPath,
     const char *PGOUsePath, bool InstrumentCoverage,
     const char *InstrProfileOutput, const char *PGOSampleUsePath,
-    const char *PgoColdFuncOpt, bool DebugInfoForProfiling, void *LlvmSelfProfiler,
+    const char *PgoColdFuncOpt, const char *PgoHotFuncOpt, bool DebugInfoForProfiling, void *LlvmSelfProfiler,
     LLVMRustSelfProfileBeforePassCallback BeforePassCallback,
     LLVMRustSelfProfileAfterPassCallback AfterPassCallback,
     const char *ExtraPasses, size_t ExtraPassesLen, const char *LLVMPlugins,
@@ -845,6 +846,29 @@ extern "C" LLVMRustResult LLVMRustOptimize(
         MPM.addPass(RealtimeSanitizerPass());
       });
     }
+  }
+
+  if (PgoHotFuncOpt && *PgoHotFuncOpt) {
+    PipelineStartEPCallbacks.push_back(
+        [](ModulePassManager &MPM, OptimizationLevel Level) {
+          struct AddHotAttrPass : public PassInfoMixin<AddHotAttrPass> {
+            PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+              ProfileSummaryInfo PSI(M);
+              bool Changed = false;
+              for (auto &F : M) {
+                if (F.isDeclaration())
+                  continue;
+                if (PSI.isFunctionEntryHot(&F)) {
+                  F.addFnAttr(Attribute::Hot);
+                  Changed = true;
+                }
+              }
+              return Changed ? PreservedAnalyses::none()
+                             : PreservedAnalyses::all();
+            }
+          };
+          MPM.addPass(AddHotAttrPass());
+        });
   }
 
   ModulePassManager MPM;

@@ -81,6 +81,7 @@ pub struct ModuleConfig {
     pub pgo_use: Option<PathBuf>,
     pub pgo_sample_use: Option<PathBuf>,
     pub pgo_cold_func_opt: Option<String>,
+    pub pgo_hot_func_opt: Option<String>,
     pub debug_info_for_profiling: bool,
     pub instrument_coverage: bool,
 
@@ -181,6 +182,7 @@ impl ModuleConfig {
             pgo_use: if_regular!(sess.opts.cg.profile_use.clone(), None),
             pgo_sample_use: if_regular!(sess.opts.unstable_opts.profile_sample_use.clone(), None),
             pgo_cold_func_opt: if_regular!(sess.opts.cg.pgo_cold_func_opt.clone(), None),
+            pgo_hot_func_opt: if_regular!(sess.opts.cg.pgo_hot_func_opt.clone(), None),
             debug_info_for_profiling: sess.opts.unstable_opts.debuginfo_for_profiling,
             instrument_coverage: if_regular!(sess.instrument_coverage(), false),
 

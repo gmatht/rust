@@ -319,6 +319,7 @@ pub(crate) enum AttributeKind {
     SanitizeRealtimeBlocking = 48,
     Convergent = 49,
     NoFree = 50,
+    Hot = 51,
 }
 
 /// LLVMIntPredicate
@@ -2487,6 +2488,7 @@ unsafe extern "C" {
         InstrProfileOutput: *const c_char,
         PGOSampleUsePath: *const c_char,
         PgoColdFuncOpt: *const c_char,
+        PgoHotFuncOpt: *const c_char,
         DebugInfoForProfiling: bool,
         llvm_selfprofiler: *mut c_void,
         begin_callback: SelfProfileBeforePassCallback,
