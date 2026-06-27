@@ -548,12 +548,11 @@ fn mir_drops_elaborated_and_const_checked(tcx: TyCtxt<'_>, def: LocalDefId) -> &
 
     let is_fn_like = tcx.def_kind(def).is_fn_like();
     if is_fn_like {
-        // Do not compute the mir call graph without said call graph actually being used.
-        if pm::should_run_pass(tcx, &inline::Inline, pm::Optimizations::Allowed)
-            || inline::ForceInline::should_run_pass_for_callee(tcx, def.to_def_id())
-        {
-            tcx.ensure_done().mir_inliner_callees(ty::InstanceKind::Item(def.to_def_id()));
-        }
+        // Always pre-compute the call graph for cycle detection, so that
+        // `mir_inliner_callees` is cached before `mir_promoted` is stolen.
+        // This is needed even when inlining is globally disabled (e.g. Oz),
+        // because per-function opt levels may selectively enable inlining.
+        tcx.ensure_done().mir_inliner_callees(ty::InstanceKind::Item(def.to_def_id()));
     }
 
     tcx.ensure_done().check_liveness(def);
@@ -703,6 +702,7 @@ pub(crate) fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'
     }
 
     let def_id = body.source.def_id();
+
     let optimizations = if tcx.def_kind(def_id).has_codegen_attrs()
         && tcx.codegen_fn_attrs(def_id).optimize.do_not_optimize()
     {
@@ -838,10 +838,31 @@ fn inner_optimized_mir(tcx: TyCtxt<'_>, did: LocalDefId) -> Body<'_> {
     if let TerminatorKind::Unreachable = body.basic_blocks[START_BLOCK].terminator().kind
         && body.basic_blocks[START_BLOCK].statements.is_empty()
     {
+        rustc_session::PER_FN_MIR_OPT_LEVEL.with(|l| l.set(None));
         return body;
     }
 
+    // Set per-function MIR opt level based on hot function list.
+    // This is read by Inline::is_enabled and other passes. Must be set
+    // AFTER mir_drops_elaborated_and_const_checked to avoid the cycle
+    // detection code path that should_run_pass triggers.
+    if let Some(hot_names) = tcx.sess.hot_fn_names() {
+        let def_path: String = rustc_middle::ty::print::with_no_trimmed_paths!(
+            tcx.def_path_str(body.source.def_id())
+        );
+        let crate_name = tcx.crate_name(body.source.def_id().krate);
+        let full = format!("{}::{}", crate_name, def_path);
+        let is_hot = hot_names.contains(&def_path) || hot_names.contains(&full);
+        if is_hot {
+            tcx.sess.set_per_fn_mir_opt_level(Some(3));
+        } else {
+            tcx.sess.set_per_fn_mir_opt_level(Some(2));
+        }
+    }
+
     run_optimization_passes(tcx, &mut body);
+
+    rustc_session::PER_FN_MIR_OPT_LEVEL.with(|l| l.set(None));
 
     body
 }

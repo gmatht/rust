@@ -1,8 +1,10 @@
 use std::any::Any;
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::OnceLock;
 use std::{env, io};
 
 use rustc_data_structures::flock;
@@ -185,6 +187,9 @@ pub struct Session {
     /// Whether the test harness removed a user-written `#[rustc_main]` attribute
     /// while generating the synthetic test entry point.
     pub removed_rustc_main_attr: AtomicBool,
+
+    /// Cached parsed hot function names from `-Z hot-function-list`.
+    hot_fn_cache: OnceLock<Option<FxHashSet<String>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -593,6 +598,13 @@ impl Session {
     }
 }
 
+thread_local! {
+    /// Per-function MIR optimization level, set by the MIR pass pipeline
+    /// based on `-Z hot-function-list` or `#[optimize(size/speed)]`.
+    /// `None` means use the global `mir_opt_level()`.
+    pub static PER_FN_MIR_OPT_LEVEL: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
 // JUSTIFICATION: defn of the suggested wrapper fns
 #[allow(rustc::bad_opt_access)]
 impl Session {
@@ -617,10 +629,41 @@ impl Session {
     }
 
     pub fn mir_opt_level(&self) -> usize {
-        self.opts
-            .unstable_opts
-            .mir_opt_level
-            .unwrap_or_else(|| if self.opts.optimize != OptLevel::No { 2 } else { 1 })
+        PER_FN_MIR_OPT_LEVEL.with(|level| {
+            if let Some(per_fn) = level.get() {
+                return per_fn;
+            }
+            self.opts
+                .unstable_opts
+                .mir_opt_level
+                .unwrap_or_else(|| if self.opts.optimize != OptLevel::No { 2 } else { 1 })
+        })
+    }
+
+    /// Set a per-function MIR optimization level override.
+    /// `None` restores the default (global level). Used by the MIR pipeline
+    /// for `-Z hot-function-list` and `#[optimize(size/speed)]`.
+    pub fn set_per_fn_mir_opt_level(&self, level: Option<usize>) {
+        PER_FN_MIR_OPT_LEVEL.with(|l| l.set(level));
+    }
+
+    /// Returns the cached hot function names from `-Z hot-function-list`.
+    /// Lazily loads and parses the file on first access.
+    pub fn hot_fn_names(&self) -> Option<&FxHashSet<String>> {
+        self.hot_fn_cache.get_or_init(|| {
+            self.opts.unstable_opts.hot_function_list.as_ref().map(|path| {
+                std::fs::read_to_string(path)
+                    .map(|content| {
+                        content.lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_else(|_| {
+                        FxHashSet::default()
+                    })
+            })
+        }).as_ref()
     }
 
     /// Calculates the flavor of LTO to use for this compilation.
@@ -1138,6 +1181,7 @@ pub fn build_session(
         mir_opt_bisect_eval_count: AtomicUsize::new(0),
         used_features: Lock::default(),
         removed_rustc_main_attr: AtomicBool::new(false),
+        hot_fn_cache: OnceLock::new(),
     };
 
     validate_commandline_args_with_session_available(&sess);
