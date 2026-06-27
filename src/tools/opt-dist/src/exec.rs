@@ -38,6 +38,51 @@ impl CmdBuilder {
         self
     }
 
+    /// Run the command and capture stdout into a String
+    pub fn capture_output(self) -> anyhow::Result<String> {
+        let mut cmd_str = String::new();
+        cmd_str.push_str(
+            &self
+                .env
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        if !self.env.is_empty() {
+            cmd_str.push(' ');
+        }
+        cmd_str.push_str(&self.args.join(" "));
+        cmd_str.push_str(&format!(
+            " [at {}]",
+            self.workdir
+                .clone()
+                .unwrap_or_else(|| std::env::current_dir().unwrap().try_into().unwrap())
+        ));
+        log::info!("Executing (capturing) `{cmd_str}`");
+
+        let mut cmd = Command::new(&self.args[0]);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::inherit());
+        cmd.args(self.args.iter().skip(1));
+        for (key, value) in &self.env {
+            cmd.env(key, value);
+        }
+        if let Some(ref workdir) = self.workdir {
+            cmd.current_dir(workdir.clone().into_std_path_buf());
+        }
+        let output = cmd.output()?;
+        if !output.status.success() {
+            Err(anyhow::anyhow!(
+                "Command {cmd_str} has failed with exit code {:?}",
+                output.status.code(),
+            ))
+        } else {
+            Ok(String::from_utf8(output.stdout)?)
+        }
+    }
+
     pub fn run(self) -> anyhow::Result<()> {
         let mut cmd_str = String::new();
         cmd_str.push_str(
@@ -163,6 +208,11 @@ impl Bootstrap {
 
     pub fn rustc_pgo_optimize(mut self, profile: &RustcPGOProfile) -> Self {
         self.cmd = self.cmd.arg("--rust-profile-use").arg(profile.0.as_str());
+        self
+    }
+
+    pub fn rustc_hot_function_list(mut self, path: &Utf8Path) -> Self {
+        self.cmd = self.cmd.arg("--rust-hot-function-list").arg(path.as_str());
         self
     }
 

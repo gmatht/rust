@@ -10,8 +10,8 @@ use crate::exec::{Bootstrap, cmd};
 use crate::tests::run_tests;
 use crate::timer::Timer;
 use crate::training::{
-    gather_bolt_profiles, gather_llvm_profiles, gather_rustc_profiles, llvm_benchmarks,
-    rustc_benchmarks,
+    extract_hot_functions, gather_bolt_profiles, gather_llvm_profiles, gather_rustc_profiles,
+    llvm_benchmarks, rustc_benchmarks,
 };
 use crate::utils::artifact_size::print_binary_sizes;
 use crate::utils::io::{copy_directory, reset_directory};
@@ -260,8 +260,16 @@ fn execute_pipeline(
             .section("Gather profiles", |_| gather_rustc_profiles(env, &rustc_profile_dir_root))?;
         print_free_disk_space()?;
 
+        // Extract hot function list from the PGO profile
+        let hot_function_list = env.artifact_dir().join("hot-functions.txt");
+        stage.section("Extract hot function list", |_| {
+            extract_hot_functions(env, &profile.0, &hot_function_list, 90)
+        })?;
+
         stage.section("Build PGO optimized rustc", |section| {
-            let mut cmd = Bootstrap::build(env).rustc_pgo_optimize(&profile);
+            let mut cmd = Bootstrap::build(env)
+                .rustc_pgo_optimize(&profile)
+                .rustc_hot_function_list(&hot_function_list);
             if env.use_bolt() {
                 cmd = cmd.with_rustc_bolt_ldflags();
             }

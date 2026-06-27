@@ -229,3 +229,73 @@ pub fn gather_bolt_profiles(
 
     Ok(BoltProfile(merged_profile))
 }
+
+/// Reads a merged PGO `.profdata` profile and extracts hot function symbols.
+///
+/// Uses `llvm-profdata show -all-functions` to get function names and counts.
+/// Functions are sorted by count descending, and the hottest functions covering
+/// `threshold`% of total CPU time are written to `output_path`.
+pub fn extract_hot_functions(
+    env: &Environment,
+    profdata: &Utf8Path,
+    output_path: &Utf8Path,
+    threshold: u8,
+) -> anyhow::Result<()> {
+    let llvm_profdata = env.host_llvm_dir().join(format!("bin/llvm-profdata{}", executable_extension()));
+
+    // Get all function names and counts
+    let output = cmd(&[llvm_profdata.as_str(), "show", "-all-functions", profdata.as_str()])
+        .capture_output()
+        .context("Cannot run llvm-profdata show")?;
+
+    let mut functions: Vec<(String, u64)> = Vec::new();
+    let mut current_name: Option<String> = None;
+    let mut total_count: u64 = 0;
+
+    for line in output.lines() {
+        if line.starts_with("  ") && !line.starts_with("    ") && line.ends_with(':') {
+            // Function name line (indented by 2 spaces, ends with colon)
+            current_name = Some(line.trim().trim_end_matches(':').to_string());
+        } else if let Some(ref name) = current_name {
+            if let Some(count_str) = line.trim().strip_prefix("Function count: ") {
+                if let Ok(count) = count_str.trim().parse::<u64>() {
+                    total_count += count;
+                    functions.push((name.clone(), count));
+                }
+                current_name = None;
+            }
+        }
+    }
+
+    // Sort by count descending
+    functions.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Take functions until we reach threshold% of total count
+    let threshold_total = (total_count as f64 * threshold as f64 / 100.0) as u64;
+    let mut cumulative: u64 = 0;
+    let mut hot_functions: Vec<String> = Vec::new();
+
+    for (name, count) in &functions {
+        cumulative += count;
+        hot_functions.push(name.clone());
+        if cumulative >= threshold_total {
+            break;
+        }
+    }
+
+    // Write the hot function list
+    let content = hot_functions.join("\n");
+    std::fs::write(output_path.as_std_path(), &content)
+        .with_context(|| format!("Cannot write hot function list to {output_path}"))?;
+
+    log::info!(
+        "Extracted {} hot functions (cumulative count: {}/{}, {:.1}%) to {}",
+        hot_functions.len(),
+        cumulative,
+        total_count,
+        cumulative as f64 / total_count as f64 * 100.0,
+        output_path,
+    );
+
+    Ok(())
+}

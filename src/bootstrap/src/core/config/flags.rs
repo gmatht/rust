@@ -157,6 +157,9 @@ pub struct Flags {
     /// use PGO profile for rustc build
     #[arg(global = true, value_hint = clap::ValueHint::FilePath, long, value_name = "PROFILE")]
     pub rust_profile_use: Option<String>,
+    /// use hot function list for rustc build (for hot/cold code separation)
+    #[arg(global = true, value_hint = clap::ValueHint::FilePath, long, value_name = "LIST")]
+    pub rust_hot_function_list: Option<String>,
     /// use PGO profile for LLVM build
     #[arg(global = true, value_hint = clap::ValueHint::FilePath, long, value_name = "PROFILE")]
     pub llvm_profile_use: Option<String>,

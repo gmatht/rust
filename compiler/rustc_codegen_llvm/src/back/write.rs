@@ -111,7 +111,11 @@ pub(crate) fn create_informational_target_machine(
     target_machine_factory(sess, config::OptLevel::No, &features)(sess.dcx(), config)
 }
 
-pub(crate) fn create_target_machine(tcx: TyCtxt<'_>, mod_name: &str) -> OwnedTargetMachine {
+pub(crate) fn create_target_machine(
+    tcx: TyCtxt<'_>,
+    mod_name: &str,
+    opt_level: Option<config::OptLevel>,
+) -> OwnedTargetMachine {
     let split_dwarf_file = if tcx.sess.target_can_use_split_dwarf() {
         tcx.output_filenames(()).split_dwarf_path(
             tcx.sess.split_debuginfo(),
@@ -126,9 +130,11 @@ pub(crate) fn create_target_machine(tcx: TyCtxt<'_>, mod_name: &str) -> OwnedTar
         Some(tcx.output_filenames(()).temp_path_for_cgu(OutputType::Object, mod_name));
     let config = TargetMachineFactoryConfig { split_dwarf_file, output_obj_file };
 
+    let optlvl = opt_level.unwrap_or_else(|| tcx.backend_optimization_level(()));
+
     target_machine_factory(
         tcx.sess,
-        tcx.backend_optimization_level(()),
+        optlvl,
         tcx.global_backend_features(()),
     )(tcx.dcx(), config)
 }
@@ -909,7 +915,9 @@ pub(crate) fn optimize(
 
     // FIXME(ZuseZ4): support SanitizeHWAddress and prevent illegal/unsupported opts
 
-    if let Some(opt_level) = config.opt_level {
+    // Use the per-module opt_level override if set, otherwise fall back to the config default.
+    let effective_opt_level = module.opt_level.or(config.opt_level);
+    if let Some(opt_level) = effective_opt_level {
         let opt_stage = match cgcx.lto {
             Lto::Fat => llvm::OptStage::PreLinkFatLTO,
             Lto::Thin | Lto::ThinLocal => llvm::OptStage::PreLinkThinLTO,

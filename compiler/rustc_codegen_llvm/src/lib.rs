@@ -426,7 +426,7 @@ unsafe impl Send for ModuleLlvm {}
 unsafe impl Sync for ModuleLlvm {}
 
 impl ModuleLlvm {
-    fn new(tcx: TyCtxt<'_>, mod_name: &str) -> Self {
+    fn new(tcx: TyCtxt<'_>, mod_name: &str, opt_level: Option<OptLevel>) -> Self {
         unsafe {
             let llcx = llvm::LLVMContextCreate();
             llvm::LLVMContextSetDiscardValueNames(llcx, tcx.sess.fewer_names().to_llvm_bool());
@@ -434,7 +434,7 @@ impl ModuleLlvm {
             ModuleLlvm {
                 llmod_raw,
                 llcx,
-                tm: ManuallyDrop::new(create_target_machine(tcx, mod_name)),
+                tm: ManuallyDrop::new(create_target_machine(tcx, mod_name, opt_level)),
             }
         }
     }

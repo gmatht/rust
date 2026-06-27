@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use rustc_macros::Diagnostic;
 use rustc_middle::ty::{Instance, Ty};
 use rustc_span::{Span, Symbol};
@@ -183,4 +185,12 @@ pub(crate) struct StaticInitializerCyclic<'a> {
     pub labels: Vec<Span>,
     pub head: &'a str,
     pub target: &'a str,
+}
+
+#[derive(Diagnostic)]
+#[diag("failed to read hot function list file `{$path}`")]
+#[note("{$error}")]
+pub(crate) struct HotFunctionListReadError {
+    pub path: PathBuf,
+    pub error: String,
 }

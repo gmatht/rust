@@ -1327,6 +1327,14 @@ pub fn rustc_cargo(
         ));
     }
 
+    // Pass hot function list for hot/cold code separation
+    if let Some(path) = &builder.config.rust_hot_function_list {
+        if build_compiler.stage == 1 {
+            cargo.rustflag(&format!("-Zhot-function-list={path}"));
+            cargo.rustflag("-Zhot-cold-split");
+        }
+    }
+
     // The stage0 compiler changes infrequently and does not directly depend on code
     // in the current working directory. Therefore, caching it with sccache should be
     // useful.

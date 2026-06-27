@@ -98,7 +98,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
+use rustc_data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet};
 use rustc_data_structures::sync::par_join;
 use rustc_data_structures::unord::{UnordMap, UnordSet};
 use rustc_hir::LangItem;
@@ -118,7 +118,7 @@ use rustc_middle::ty::print::{characteristic_def_id_of_type, with_no_trimmed_pat
 use rustc_middle::ty::{self, InstanceKind, TyCtxt};
 use rustc_middle::util::Providers;
 use rustc_session::CodegenUnits;
-use rustc_session::config::{DumpMonoStatsFormat, SwitchWithOptPath};
+use rustc_session::config::{DumpMonoStatsFormat, OptLevel, SwitchWithOptPath};
 use rustc_span::Symbol;
 use rustc_target::spec::SymbolVisibility;
 use tracing::debug;
@@ -162,6 +162,19 @@ where
 
         placed
     };
+
+    // Assign per-CGU opt-levels for hot/cold split CGUs.
+    // Hot CGUs (name suffix ".hot") get O3, cold CGUs (name suffix ".cold") get Oz.
+    if tcx.sess.opts.unstable_opts.hot_cold_split {
+        for cgu in codegen_units.iter_mut() {
+            let name = cgu.name();
+            if name.as_str().ends_with(".hot") {
+                cgu.set_opt_level(Some(OptLevel::Aggressive));
+            } else if name.as_str().ends_with(".cold") {
+                cgu.set_opt_level(Some(OptLevel::SizeMin));
+            }
+        }
+    }
 
     // Merge until we don't exceed the max CGU count.
     // `merge_codegen_units` is responsible for updating the CGU size
@@ -216,6 +229,25 @@ where
     let cgu_name_builder = &mut CodegenUnitNameBuilder::new(cx.tcx);
     let cgu_name_cache = &mut UnordMap::default();
 
+    // Load hot function list for hot/cold CGU separation.
+    let hot_functions: Option<FxHashSet<String>> =
+        cx.tcx.sess.opts.unstable_opts.hot_function_list.as_ref().map(|path| {
+            std::fs::read_to_string(path)
+                .map(|content| {
+                    content.lines()
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect()
+                })
+                .unwrap_or_else(|e| {
+                    cx.tcx.dcx().emit_err(crate::diagnostics::HotFunctionListReadError {
+                        path: path.clone(),
+                        error: e.to_string(),
+                    });
+                    FxHashSet::default()
+                })
+        });
+
     for mono_item in mono_items {
         // Handle only root (GloballyShared) items directly here. Inlined (LocalCopy) items
         // are handled at the bottom of the loop based on reachability, with one exception.
@@ -238,6 +270,20 @@ where
                 cgu_name_cache,
             ),
             None => fallback_cgu_name(cgu_name_builder),
+        };
+
+        // When hot/cold split is enabled, separate hot and cold items into
+        // different CGUs by appending a suffix. This lets us set per-CGU
+        // opt-levels later without needing to split CGUs post-facto.
+        let cgu_name = if cx.tcx.sess.opts.unstable_opts.hot_cold_split {
+            let is_hot = is_item_hot(cx.tcx, &mono_item, hot_functions.as_ref());
+            if is_hot {
+                Symbol::intern(&format!("{}.hot", cgu_name.as_str()))
+            } else {
+                Symbol::intern(&format!("{}.cold", cgu_name.as_str()))
+            }
+        } else {
+            cgu_name
         };
 
         let cgu = codegen_units.entry(cgu_name).or_insert_with(|| CodegenUnit::new(cgu_name));
@@ -620,6 +666,44 @@ fn mark_code_coverage_dead_code_cgu<'tcx>(codegen_units: &mut [CodegenUnit<'tcx>
     let dead_code_cgu = if let Some(cgu) = dead_code_cgu { cgu } else { &mut codegen_units[0] };
 
     dead_code_cgu.make_code_coverage_dead_code_cgu();
+}
+
+/// Splits CGUs into hot and cold parts based on profiling data.
+/// Hot CGUs get `OptLevel::Aggressive` (O3) and cold CGUs get `OptLevel::SizeMin` (Oz).
+/// Returns `true` if a mono item should be considered "hot".
+fn is_item_hot<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    item: &MonoItem<'tcx>,
+    hot_functions: Option<&FxHashSet<String>>,
+) -> bool {
+    match item {
+        MonoItem::Fn(instance) => {
+            // Functions with `#[cold]` are always cold
+            let def_id = match instance.def {
+                ty::InstanceKind::Item(def) => def,
+                _ => return true, // shims and drop glue are hot by default
+            };
+            if tcx.codegen_fn_attrs(def_id).flags.contains(CodegenFnAttrFlags::COLD) {
+                return false;
+            }
+
+            match hot_functions {
+                Some(hot_set) => {
+                    // With a hot function list, check if the symbol is in it
+                    let sym_name = item.symbol_name(tcx).name.to_string();
+                    hot_set.contains(&sym_name)
+                }
+                None => {
+                    // Without a hot function list, everything non-cold is hot
+                    true
+                }
+            }
+        }
+        MonoItem::Static(_) | MonoItem::GlobalAsm(_) => {
+            // Statics and global asm are considered hot by default
+            true
+        }
+    }
 }
 
 fn characteristic_def_id_of_mono_item<'tcx>(

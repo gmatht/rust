@@ -81,8 +81,9 @@ pub(crate) fn compile_codegen_unit(
                 recorder.record_arg(cgu_name.to_string());
                 recorder.record_arg(cgu.size_estimate().to_string());
             });
+        let opt_level = cgu.opt_level();
         // Instantiate monomorphizations without filling out definitions yet...
-        let llvm_module = ModuleLlvm::new(tcx, cgu_name.as_str());
+        let llvm_module = ModuleLlvm::new(tcx, cgu_name.as_str(), opt_level);
         {
             let mut cx = CodegenCx::new(tcx, cgu, &llvm_module);
 
@@ -174,7 +175,7 @@ pub(crate) fn compile_codegen_unit(
             }
         }
 
-        ModuleCodegen::new_regular(cgu_name.to_string(), llvm_module)
+        ModuleCodegen::new_regular_with_opt_level(cgu_name.to_string(), llvm_module, opt_level)
     }
 
     (module, cost)
