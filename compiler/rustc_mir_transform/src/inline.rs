@@ -49,6 +49,16 @@ impl<'tcx> crate::MirPass<'tcx> for Inline {
             return enabled;
         }
 
+        // Check per-function hotness override (value 0 = hot function from
+        // -Z hot-function-list). Hot functions get inlining even when the
+        // global opt level (e.g. Oz/SizeMin) would normally disable it.
+        if let Some(per_fn) = rustc_session::PER_FN_MIR_OPT_LEVEL.with(|l| l.get()) {
+            if per_fn == 0 {
+                return true;
+            }
+            // Non-hot per-function level: fall through to normal checks
+        }
+
         match sess.mir_opt_level() {
             0 | 1 => false,
             2 => {

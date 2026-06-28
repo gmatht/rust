@@ -630,8 +630,10 @@ impl Session {
 
     pub fn mir_opt_level(&self) -> usize {
         PER_FN_MIR_OPT_LEVEL.with(|level| {
-            if let Some(per_fn) = level.get() {
-                return per_fn;
+            match level.get() {
+                // Value 0 is the hot signal — use the global level for passes.
+                Some(0) | None => {}
+                Some(per_fn) => return per_fn,
             }
             self.opts
                 .unstable_opts

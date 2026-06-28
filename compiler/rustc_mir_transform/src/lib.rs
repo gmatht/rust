@@ -875,7 +875,10 @@ fn inner_optimized_mir(tcx: TyCtxt<'_>, did: LocalDefId) -> Body<'_> {
         let full = format!("{}::{}", crate_name, def_path);
         let is_hot = hot_names.contains(&def_path) || hot_names.contains(&full);
         if is_hot {
-            tcx.sess.set_per_fn_mir_opt_level(Some(3));
+            // Mark as hot using special value 0. The MIR level stays at
+            // the global level (2 for optimized builds), but Inline::is_enabled
+            // checks this signal to enable inlining for hot functions.
+            tcx.sess.set_per_fn_mir_opt_level(Some(0));
         } else {
             tcx.sess.set_per_fn_mir_opt_level(Some(2));
         }
