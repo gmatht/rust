@@ -552,7 +552,28 @@ fn mir_drops_elaborated_and_const_checked(tcx: TyCtxt<'_>, def: LocalDefId) -> &
         // `mir_inliner_callees` is cached before `mir_promoted` is stolen.
         // This is needed even when inlining is globally disabled (e.g. Oz),
         // because per-function opt levels may selectively enable inlining.
-        tcx.ensure_done().mir_inliner_callees(ty::InstanceKind::Item(def.to_def_id()));
+        let instance = ty::InstanceKind::Item(def.to_def_id());
+        tcx.ensure_done().mir_inliner_callees(instance);
+
+        // Pre-compute optimized_mir for hot callees so that when the MIR
+        // inliner runs on hot functions (level 3), it can access the callee's
+        // MIR body without triggering a query cycle.
+        if let Some(hot_set) = tcx.sess.hot_fn_names() {
+            let callees = tcx.mir_inliner_callees(instance);
+            for &(callee_def_id, _args) in callees.iter() {
+                if let Some(local_callee) = callee_def_id.as_local() {
+                    let def_path: String =
+                        rustc_middle::ty::print::with_no_trimmed_paths!(
+                            tcx.def_path_str(callee_def_id)
+                        );
+                    let crate_name = tcx.crate_name(callee_def_id.krate);
+                    let full = format!("{}::{}", crate_name, def_path);
+                    if hot_set.contains(&def_path) || hot_set.contains(&full) {
+                        tcx.ensure_done().optimized_mir(local_callee);
+                    }
+                }
+            }
+        }
     }
 
     tcx.ensure_done().check_liveness(def);

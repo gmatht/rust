@@ -358,6 +358,26 @@ where
     }
 }
 
+/// Classifies a CGU as hot, cold, or default based on its name suffix.
+/// This is used to prevent merging CGUs with different opt-level requirements
+/// when hot/cold splitting is enabled.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CguTemperature {
+    Hot,
+    Cold,
+    Default,
+}
+
+fn cgu_temperature(name: &str) -> CguTemperature {
+    if name.ends_with(".hot") {
+        CguTemperature::Hot
+    } else if name.ends_with(".cold") {
+        CguTemperature::Cold
+    } else {
+        CguTemperature::Default
+    }
+}
+
 // This function requires the CGUs to be sorted by name on input, and ensures
 // they are sorted by name on return, for deterministic behaviour.
 fn merge_codegen_units<'tcx>(
@@ -393,6 +413,7 @@ fn merge_codegen_units<'tcx>(
         codegen_units.sort_by_key(|cgu| cmp::Reverse(cgu.size_estimate()));
 
         let cgu_dst = &codegen_units[max_codegen_units - 1];
+        let dst_temp = cgu_temperature(cgu_dst.name().as_str());
 
         // Find the CGU that overlaps the most with `cgu_dst`. In the case of a
         // tie, favour the earlier (bigger) CGU.
@@ -405,11 +426,24 @@ fn merge_codegen_units<'tcx>(
                 break;
             }
 
+            // Never merge CGUs with different hot/cold temperatures, as they
+            // would lose their per-CGU opt-level assignments.
+            if dst_temp != cgu_temperature(cgu_src.name().as_str()) {
+                continue;
+            }
+
             let overlap = compute_inlined_overlap(cgu_dst, cgu_src);
             if overlap > max_overlap {
                 max_overlap = overlap;
                 max_overlap_i = i;
             }
+        }
+
+        if max_overlap_i == max_codegen_units {
+            // No compatible CGU found (all remaining CGUs have a different
+            // temperature). The CGU count is already as low as we can make it
+            // without violating temperature separation.
+            break;
         }
 
         let mut cgu_src = codegen_units.swap_remove(max_overlap_i);
@@ -452,7 +486,21 @@ fn merge_codegen_units<'tcx>(
         codegen_units.sort_by_key(|cgu| cmp::Reverse(cgu.size_estimate()));
 
         let mut smallest = codegen_units.pop().unwrap();
-        let second_smallest = codegen_units.last_mut().unwrap();
+
+        // Find another CGU of the same temperature to merge into. We scan
+        // from the back (smallest) to avoid upsetting large CGUs.
+        let smallest_temp = cgu_temperature(smallest.name().as_str());
+        let merge_target = codegen_units
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find(|(_, cgu)| cgu_temperature(cgu.name().as_str()) == smallest_temp);
+
+        let Some((_, second_smallest)) = merge_target else {
+            // No compatible CGU found; put `smallest` back and stop merging.
+            codegen_units.push(smallest);
+            break;
+        };
 
         // Move the items from `smallest` to `second_smallest`. Some of them
         // may be duplicate inlined items, in which case the destination CGU is
@@ -689,9 +737,16 @@ fn is_item_hot<'tcx>(
 
             match hot_functions {
                 Some(hot_set) => {
-                    // With a hot function list, check if the symbol is in it
+                    // Check against the mangled symbol name (matches V0 mangling
+                    // used by stage2+ compilers).
                     let sym_name = item.symbol_name(tcx).name.to_string();
-                    hot_set.contains(&sym_name)
+                    if hot_set.contains(&sym_name) {
+                        return true;
+                    }
+                    // Also check against the demangled def path (matches legacy
+                    // _ZN mangling from nightly PGO profiling).
+                    let def_path = with_no_trimmed_paths!(tcx.def_path_str(def_id));
+                    hot_set.contains(&def_path)
                 }
                 None => {
                     // Without a hot function list, everything non-cold is hot
