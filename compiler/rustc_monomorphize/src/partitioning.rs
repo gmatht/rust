@@ -181,6 +181,7 @@ where
             let hot_funcs = read_hot_function_list(hot_func_path);
             if !hot_funcs.is_empty() {
                 let mut split_cgus: Vec<CodegenUnit<'tcx>> = Vec::new();
+                let original_count = codegen_units.len();
                 for cgu in codegen_units.drain(..) {
                     let cgu_name = cgu.name();
                     let mut hot_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
@@ -236,6 +237,11 @@ where
                         if cgu.is_primary() { cold_cgu.make_primary(); }
                         split_cgus.push(cold_cgu);
                     }
+                }
+
+                eprintln!("DEBUG hot-cold-split: {} original CGUs -> {} split CGUs, hot_funcs={}", original_count, split_cgus.len(), hot_funcs.len());
+                for cgu in &split_cgus {
+                    eprintln!("DEBUG CGU: name={} items={} opt={:?}", cgu.name(), cgu.items().len(), cgu.opt_level());
                 }
 
                 split_cgus.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
