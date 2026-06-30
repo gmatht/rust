@@ -135,14 +135,13 @@ echo "  Found $NUM_HOT hot functions (threshold >1% of max)" >&2
 
 rm -f "$REL_DIR/.cargo-lock" "$REL_DIR/.cargo-ok" 2>/dev/null || true
 
-# Phase 2 — rebuild with PGO profile-use + O3 + per-CGU hot/cold opt-level.
-# Uses -Z hot-cold-split and -Z hot-function-list to set per-CGU opt-level:
-#   All-hot CGU → O3 (.o3 suffix)
-#   All-cold CGU → Oz (.oz suffix)
-#   Mixed CGU → O3 (conservative, avoids splitting overhead)
-# No CGU splitting (caused PGO hash mismatches and 238K CGU overhead).
-# PGO profile-use is still provided so LLVM gets additional guidance.
-echo "=== [cargo-autosplit] Phase 2 — build (O3+Oz per-CGU + PGO) ===" >&2
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 -Z hot-cold-split -Z hot-function-list=$PGO_DIR/hot_functions.txt" cargo "$@"
+# Phase 2 — rebuild with PGO profile-use + O3.
+# Hot/cold per-CGU opt-level via -Z hot-cold-split is NOT used because it
+# changes the LLVM pre-PGO optimization pipeline (CallSiteSplittingPass,
+# pre-inliner thresholds) differently for O3 vs Oz CGUs, causing PGO hash
+# mismatches and discarded profile data.
+# PGO profile-use alone guides LLVM's hot/code classification.
+echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO) ===" >&2
+RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3" cargo "$@"
 
 echo "=== [cargo-autosplit] Done ===" >&2
