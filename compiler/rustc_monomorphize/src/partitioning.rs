@@ -246,15 +246,16 @@ where
 
     // Assign per-CGU opt-levels for hot/cold split CGUs.
     // Hot CGUs get Aggressive (O3) for maximum performance.
-    // Cold CGUs get SizeMin (Oz) so their code is genuinely small.
-    // This prevents pre-link O3 from generating large IR for cold code
-    // that post-link SizeMin cannot fully undo.
+    // Cold CGUs stay at the global O3 (no override) so their IR structure
+    // matches Phase 1 (PGO profiling at O3), avoiding PGO hash mismatches.
+    // Cold function attributes (set by MarkHotColdFromName pass) guide LLVM
+    // to optimize cold functions for size within O3 pre-link.
+    // ThinLTO post-link applies SizeMin (Oz) to .cold CGUs (see lto.rs),
+    // which provides the final size optimization for cold code.
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         for cgu in codegen_units.iter_mut() {
             if cgu.name().as_str().ends_with(".hot") {
                 cgu.set_opt_level(Some(OptLevel::Aggressive));
-            } else if cgu.name().as_str().ends_with(".cold") {
-                cgu.set_opt_level(Some(OptLevel::SizeMin));
             }
         }
     }
