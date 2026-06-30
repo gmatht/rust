@@ -176,7 +176,13 @@ where
     // we implement the split at the CGU level by reading the hot function list.
     // CGUs containing only hot functions get O3; CGUs containing only cold
     // functions get Oz; mixed CGUs are split into separate hot and cold CGUs.
-    tcx.dcx().note(format!("hot-cold-split: opt={:?} hot_func_list={:?}", tcx.sess.opts.unstable_opts.hot_cold_split, tcx.sess.opts.unstable_opts.hot_function_list));
+    {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "HOTCOLD_DEBUG: partition() called, hot_cold_split={:?} hot_func_list={:?} cgus={}",
+            tcx.sess.opts.unstable_opts.hot_cold_split,
+            tcx.sess.opts.unstable_opts.hot_function_list,
+            codegen_units.len());
+    }
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
             let hot_funcs = read_hot_function_list(hot_func_path);
