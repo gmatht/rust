@@ -596,9 +596,22 @@ pub(crate) fn run_pass_manager(
     // during ThinLTO post-link only.
     // When no per-CGU opt-level is found (or hot-cold-split is disabled), use
     // the global configured opt-level for all modules.
+    // Post-link opt-level: read from the PER_CGU_OPT_LEVEL side channel set
+    // during partitioning (rustc_session::config::set_per_cgu_opt_level).
+    // The side channel is process-local — it only contains CGU entries for
+    // the ROOT crate (the crate currently being compiled).  Dependency-crate
+    // CGUs compiled in separate rustc invocations had their own side channels
+    // that are now gone.
+    //
+    // When no per-CGU opt-level is found (dependency CGUs), fall back to
+    // SizeMin (Oz) instead of the global O3.  This ensures dependency CGUs
+    // (which are all-cold since no dependency function appears in the PGO
+    // hot-function-list) are post-link optimized at Oz, matching their
+    // pre-link opt-level.  Without this fallback, dependency CGUs would be
+    // post-link optimized at O3 (the global level), adding size bloat.
     let post_link_opt = if cgcx.hot_cold_split {
         rustc_session::config::get_per_cgu_opt_level(&module.name)
-            .unwrap_or(config.opt_level.unwrap_or(config::OptLevel::No))
+            .unwrap_or(config::OptLevel::SizeMin)
     } else {
         config.opt_level.unwrap_or(config::OptLevel::No)
     };
