@@ -9,11 +9,11 @@ use std::ffi::OsStr;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::{cmp, fs, iter};
 
 use externs::{ExternOpt, split_extern_opt};
-use rustc_data_structures::fx::{FxHashSet, FxIndexMap};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap};
 use rustc_data_structures::stable_hasher::{StableHasher, StableOrd, ToStableHashKey};
 use rustc_errors::emitter::HumanReadableErrorType;
 use rustc_errors::{ColorConfig, DiagCtxtFlags};
@@ -3397,4 +3397,34 @@ impl MirIncludeSpans {
     pub fn is_enabled(self) -> bool {
         self == MirIncludeSpans::On
     }
+}
+
+/// Per-CGU opt-level side channel, used to communicate hot/cold opt-level
+/// decisions from CGU partitioning (rustc_monomorphize::partitioning) to
+/// ThinLTO post-link optimization (rustc_codegen_llvm::back::lto).
+///
+/// We avoid calling cgu.set_opt_level() during partitioning because that
+/// would change the LLVM pre-PGO optimization pipeline for cold CGUs
+/// (different CallSiteSplittingPass, pre-inliner thresholds), causing PGO
+/// hash mismatches between profile-generate (Phase 1, all O3) and
+/// profile-use (Phase 2, mixed O3/Oz).
+///
+/// Instead, all CGUs stay at the global opt-level (O3) for pre-link codegen.
+/// The per-CGU opt-level is stored here and applied during ThinLTO post-link
+/// only (lto.rs::run_pass_manager).
+static PER_CGU_OPT_LEVEL: OnceLock<Mutex<FxHashMap<String, OptLevel>>> = OnceLock::new();
+
+/// Store the per-CGU opt-level for a CGU name (called during partitioning).
+pub fn set_per_cgu_opt_level(cgu_name: &str, opt_level: OptLevel) {
+    let map = PER_CGU_OPT_LEVEL.get_or_init(|| Mutex::new(FxHashMap::default()));
+    map.lock().unwrap().insert(cgu_name.to_string(), opt_level);
+}
+
+/// Read the per-CGU opt-level for a CGU name (called during ThinLTO post-link).
+/// Returns `None` if no per-CGU opt-level was set (caller should use global opt-level).
+pub fn get_per_cgu_opt_level(cgu_name: &str) -> Option<OptLevel> {
+    PER_CGU_OPT_LEVEL
+        .get()
+        .and_then(|m| m.lock().ok())
+        .and_then(|guard| guard.get(cgu_name).copied())
 }

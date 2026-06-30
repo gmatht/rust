@@ -118,7 +118,7 @@ use rustc_middle::ty::print::{characteristic_def_id_of_type, with_no_trimmed_pat
 use rustc_middle::ty::{self, InstanceKind, TyCtxt};
 use rustc_middle::util::Providers;
 use rustc_session::CodegenUnits;
-use rustc_session::config::{DumpMonoStatsFormat, SwitchWithOptPath};
+use rustc_session::config::{DumpMonoStatsFormat, SwitchWithOptPath, set_per_cgu_opt_level};
 use rustc_span::Symbol;
 use rustc_target::spec::SymbolVisibility;
 use tracing::debug;
@@ -172,29 +172,30 @@ where
         debug_dump(tcx, "MERGE", &codegen_units);
     }
 
-    // Hot/cold split: when -Z hot-cold-split is enabled, set per-CGU opt-level
-    // based on the hot function list.
+    // Hot/cold split: when -Z hot-cold-split is enabled, determine per-CGU
+    // opt-level based on the hot function list and store in a side channel
+    // for ThinLTO post-link use (lto.rs).
     //
-    // CGU names are NOT changed (no .o3/.oz suffix) because renaming changes the
-    // LLVM module identifier, which causes PGO hash mismatches between Phase 1
-    // (profile-generate, no hot-cold-split) and Phase 2 (profile-use, hot-cold-split).
-    // With the same CGU names, the module identifiers are identical, PGO hashes
-    // match, and profile data is fully used.
+    // CRITICAL: We do NOT call cgu.set_opt_level() because that changes the
+    // LLVM pre-PGO optimization pipeline for cold CGUs (e.g. skips
+    // CallSiteSplittingPass at SizeMin, uses lower pre-inliner thresholds at
+    // Oz). These pipeline differences change function IR BEFORE
+    // PGOInstrumentationUse runs, causing PGO hash mismatches between Phase 1
+    // (profile-generate, all O3) and Phase 2 (profile-use, mixed O3/Oz).
     //
-    // The per-CGU opt-level applies to pre-link codegen only. ThinLTO post-link
-    // (lto.rs) uses the global opt-level (O3) for all modules, which means cold
-    // CGUs may get some additional O3 optimization during LTO post-link. However,
-    // the pre-link SizeMin pass produces significantly smaller cold code, and
-    // matching PGO hashes ensures hot code gets full PGO-guided optimization.
+    // Instead, all CGUs stay at the global opt-level (O3) for pre-link codegen,
+    // ensuring identical LLVM pre-PGO pipelines between phases. The per-CGU
+    // opt-level is stored via rustc_session::config::set_per_cgu_opt_level and
+    // applied during ThinLTO post-link only (lto.rs::run_pass_manager reads it
+    // via rustc_session::config::get_per_cgu_opt_level).
     //
-    // For Phase 1 builds (no hot-cold-split, no-hot-function-list), the CGU
-    // structure is identical to Phase 2 builds (with hot-cold-split + list),
-    // guaranteeing PGO profile compatibility.
+    // CGU names are also NOT changed (no .o3/.oz suffix) to keep module
+    // identifiers identical between phases.
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
             let hot_funcs = read_hot_function_list(hot_func_path);
             if !hot_funcs.is_empty() {
-                for cgu in codegen_units.iter_mut() {
+                for cgu in codegen_units.iter() {
                     let has_hot = cgu.items().keys().any(|item| {
                         let sym_name = item.symbol_name(tcx).name.to_string();
                         hot_funcs.contains(&sym_name)
@@ -204,15 +205,14 @@ where
                         !hot_funcs.contains(&sym_name)
                     });
                     if has_hot && !has_cold {
-                        // All-hot CGU: O3
-                        cgu.set_opt_level(Some(OptLevel::Aggressive));
+                        // All-hot CGU: O3 post-link
+                        set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
                     } else if !has_hot && has_cold {
-                        // All-cold CGU: Oz
-                        cgu.set_opt_level(Some(OptLevel::SizeMin));
+                        // All-cold CGU: Oz post-link
+                        set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
                     } else {
-                        // Mixed CGU: keep O3 (conservative).
-                        // Not splitting avoids CGU overhead and PGO mismatches.
-                        cgu.set_opt_level(Some(OptLevel::Aggressive));
+                        // Mixed CGU: O3 post-link (conservative).
+                        set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
                     }
                 }
             }

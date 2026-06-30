@@ -589,14 +589,19 @@ pub(crate) fn run_pass_manager(
     //      llvm/lib/LTO/LTOCodeGenerator.cpp
     debug!("running the pass manager");
     let opt_stage = if thin { llvm::OptStage::ThinLTO } else { llvm::OptStage::FatLTO };
-    // Post-link opt-level: CGU names are NOT renamed (no .o3/.oz suffix) to
-    // keep PGO hashes matching between Phase 1 and Phase 2. The per-CGU opt-level
-    // is applied during pre-link codegen only (via set_opt_level in partitioning.rs).
-    // For ThinLTO post-link, we use the global configured opt-level for all modules.
-    // Cold CGUs got SizeMin pre-link, which produces compact IR; post-link O3
-    // may add some optimizations but the size savings from pre-link SizeMin
-    // are preserved.
-    let post_link_opt = config.opt_level.unwrap_or(config::OptLevel::No);
+    // Post-link opt-level: read from the PER_CGU_OPT_LEVEL side channel set
+    // during partitioning (rustc_session::config::set_per_cgu_opt_level).
+    // Per-CGU opt-level is NOT applied during pre-link codegen (to keep PGO
+    // hashes matching between Phase 1 and Phase 2). Instead, it is applied
+    // during ThinLTO post-link only.
+    // When no per-CGU opt-level is found (or hot-cold-split is disabled), use
+    // the global configured opt-level for all modules.
+    let post_link_opt = if cgcx.hot_cold_split {
+        rustc_session::config::get_per_cgu_opt_level(&module.name)
+            .unwrap_or(config.opt_level.unwrap_or(config::OptLevel::No))
+    } else {
+        config.opt_level.unwrap_or(config::OptLevel::No)
+    };
 
     // The PostAD behavior is the same that we would have if no autodiff was used.
     // It will run the default optimization pipeline. If AD is enabled we select
