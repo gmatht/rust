@@ -202,6 +202,14 @@ rm -rf "$REL_DIR"
 # Phase 2 — Final build with PGO use + hot/cold CGU splitting
 # ============================================================
 echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO + hot-cold-split) ===" >&2
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
+# De-prioritize dependencies at Oz to reduce binary size.
+# The -C opt-level=3 is NOT in RUSTFLAGS (which would override all packages).
+# Instead, per-package opt-level is controlled via --config:
+#   "*" → Oz (all packages default to size-optimized)
+#   prime-finder → O3 (hot path stays speed-optimized)
+RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata $HOT_COLD_FLAGS" \
+  cargo "$@" \
+  --config 'profile.release.package."*".opt-level="z"' \
+  --config 'profile.release.package."prime-finder".opt-level=3'
 
 echo "=== [cargo-autosplit] Done ===" >&2
