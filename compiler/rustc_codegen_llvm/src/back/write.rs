@@ -807,6 +807,7 @@ pub(crate) unsafe fn llvm_optimize(
             extra_passes.len(),
             llvm_plugins.as_c_char_ptr(),
             llvm_plugins.len(),
+            cgcx.hot_cold_split,
         )
     };
 
@@ -907,7 +908,8 @@ pub(crate) fn optimize(
 
     // FIXME(ZuseZ4): support SanitizeHWAddress and prevent illegal/unsupported opts
 
-    if let Some(opt_level) = config.opt_level {
+    let effective_opt_level = module.opt_level.or(config.opt_level);
+    if let Some(opt_level) = effective_opt_level {
         let opt_stage = match cgcx.lto {
             Lto::Fat => llvm::OptStage::PreLinkFatLTO,
             Lto::Thin | Lto::ThinLocal => llvm::OptStage::PreLinkThinLTO,

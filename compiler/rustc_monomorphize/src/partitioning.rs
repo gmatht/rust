@@ -95,10 +95,10 @@
 use std::cmp;
 use std::collections::hash_map::Entry;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
+use rustc_data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet};
 use rustc_data_structures::sync::par_join;
 use rustc_data_structures::unord::{UnordMap, UnordSet};
 use rustc_hir::LangItem;
@@ -113,6 +113,7 @@ use rustc_middle::mono::{
     CodegenUnit, CodegenUnitNameBuilder, InstantiationMode, MonoItem, MonoItemData,
     MonoItemPartitions, Visibility,
 };
+use rustc_session::config::OptLevel;
 use rustc_middle::ty::print::{characteristic_def_id_of_type, with_no_trimmed_paths};
 use rustc_middle::ty::{self, InstanceKind, TyCtxt};
 use rustc_middle::util::Providers;
@@ -169,6 +170,94 @@ where
         let _prof_timer = tcx.prof.generic_activity("cgu_partitioning_merge_cgus");
         merge_codegen_units(cx, &mut codegen_units);
         debug_dump(tcx, "MERGE", &codegen_units);
+    }
+
+    // Hot/cold split: when -Z hot-cold-split is enabled with PGO profile-use,
+    // we implement the split at the CGU level by reading the hot function list.
+    // CGUs containing only hot functions get O3; CGUs containing only cold
+    // functions get Oz; mixed CGUs are split into separate hot and cold CGUs.
+    if tcx.sess.opts.unstable_opts.hot_cold_split {
+        if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
+            let hot_funcs = read_hot_function_list(hot_func_path);
+            if !hot_funcs.is_empty() {
+                let mut split_cgus: Vec<CodegenUnit<'tcx>> = Vec::new();
+                for cgu in codegen_units.drain(..) {
+                    let cgu_name = cgu.name();
+                    let mut hot_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
+                    let mut cold_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
+
+                    for (item, data) in cgu.items().iter() {
+                        let sym_name = item.symbol_name(tcx).name.to_string();
+                        if hot_funcs.contains(&sym_name) {
+                            hot_items.push((*item, *data));
+                        } else {
+                            cold_items.push((*item, *data));
+                        }
+                    }
+
+                    if !hot_items.is_empty() && !cold_items.is_empty() {
+                        // Mixed CGU: split into hot and cold parts
+                        let hot_cgu_name = Symbol::intern(&format!("{}.hot", cgu_name));
+                        let cold_cgu_name = Symbol::intern(&format!("{}.cold", cgu_name));
+
+                        let mut hot_cgu = CodegenUnit::new(hot_cgu_name);
+                        for (item, data) in hot_items {
+                            hot_cgu.items_mut().insert(item, data);
+                        }
+                        hot_cgu.compute_size_estimate();
+                        if cgu.is_primary() { hot_cgu.make_primary(); }
+
+                        let mut cold_cgu = CodegenUnit::new(cold_cgu_name);
+                        for (item, data) in cold_items {
+                            cold_cgu.items_mut().insert(item, data);
+                        }
+                        cold_cgu.compute_size_estimate();
+
+                        split_cgus.push(hot_cgu);
+                        split_cgus.push(cold_cgu);
+                    } else if !hot_items.is_empty() {
+                        // All-hot CGU: add .hot suffix so it gets O3
+                        let hot_cgu_name = Symbol::intern(&format!("{}.hot", cgu_name));
+                        let mut hot_cgu = CodegenUnit::new(hot_cgu_name);
+                        for (item, data) in hot_items {
+                            hot_cgu.items_mut().insert(item, data);
+                        }
+                        hot_cgu.compute_size_estimate();
+                        if cgu.is_primary() { hot_cgu.make_primary(); }
+                        split_cgus.push(hot_cgu);
+                    } else {
+                        // All-cold CGU: add .cold suffix so it gets Oz optimization.
+                        let cold_cgu_name = Symbol::intern(&format!("{}.cold", cgu_name));
+                        let mut cold_cgu = CodegenUnit::new(cold_cgu_name);
+                        for (item, data) in cold_items {
+                            cold_cgu.items_mut().insert(item, data);
+                        }
+                        cold_cgu.compute_size_estimate();
+                        if cgu.is_primary() { cold_cgu.make_primary(); }
+                        split_cgus.push(cold_cgu);
+                    }
+                }
+
+                split_cgus.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
+                codegen_units = split_cgus;
+            }
+        }
+    }
+
+    // Assign per-CGU opt-levels for hot/cold split CGUs.
+    // Hot CGUs get Aggressive (O3) for maximum performance.
+    // Cold CGUs stay at the global O3 (no override) so their IR structure
+    // matches Phase 1 (PGO profiling at O3), avoiding PGO hash mismatches.
+    // Cold+MinSize function attributes (set by MarkHotColdFromName pass)
+    // guide LLVM to optimize cold functions for size within O3 pre-link.
+    // ThinLTO post-link uses SizeMin (Oz) for ALL modules (see lto.rs),
+    // which provides the final size optimization for cold code.
+    if tcx.sess.opts.unstable_opts.hot_cold_split {
+        for cgu in codegen_units.iter_mut() {
+            if cgu.name().as_str().ends_with(".hot") {
+                cgu.set_opt_level(Some(OptLevel::Aggressive));
+            }
+        }
     }
 
     // Make as many symbols "internal" as possible, so LLVM has more freedom to
@@ -781,6 +870,7 @@ fn mono_item_visibility<'tcx>(
     can_export_generics: bool,
     always_export_generics: bool,
 ) -> Visibility {
+    let hot_cold_split = tcx.sess.opts.unstable_opts.hot_cold_split;
     let instance = match mono_item {
         // This is pretty complicated; see below.
         MonoItem::Fn(instance) => instance,
@@ -805,6 +895,9 @@ fn mono_item_visibility<'tcx>(
         }
 
         // These are all compiler glue and such, never exported, always hidden.
+        // When hot-cold-split is enabled, use Default visibility so ThinLTO
+        // can import these items across modules (needed when hot code at O3
+        // references items in Oz-compiled dependency CGUs).
         InstanceKind::VTableShim(..)
         | InstanceKind::ReifyShim(..)
         | InstanceKind::FnPtrShim(..)
@@ -814,7 +907,12 @@ fn mono_item_visibility<'tcx>(
         | InstanceKind::ConstructCoroutineInClosureShim { .. }
         | InstanceKind::DropGlue(..)
         | InstanceKind::CloneShim(..)
-        | InstanceKind::FnPtrAddrShim(..) => return Visibility::Hidden,
+        | InstanceKind::FnPtrAddrShim(..) => {
+            if hot_cold_split {
+                return Visibility::Default;
+            }
+            return Visibility::Hidden;
+        }
     };
 
     // Both the `start_fn` lang item and `main` itself should not be exported,
@@ -847,6 +945,11 @@ fn mono_item_visibility<'tcx>(
             // it available to downstream crates.
             *can_be_internalized = false;
             default_visibility(tcx, def_id, true)
+        } else if hot_cold_split {
+            // Hot-cold-split: default visibility lets ThinLTO import
+            // upstream monomorphizations across Oz/O3 CGU boundaries.
+            *can_be_internalized = false;
+            Visibility::Default
         } else {
             Visibility::Hidden
         };
@@ -857,8 +960,13 @@ fn mono_item_visibility<'tcx>(
             || (can_export_generics && tcx.codegen_fn_attrs(def_id).inline == InlineAttr::Never)
         {
             if tcx.is_unreachable_local_definition(def_id) {
-                // This instance cannot be used from another crate.
-                Visibility::Hidden
+                if hot_cold_split {
+                    // Hot-cold-split: default visibility for ThinLTO import.
+                    *can_be_internalized = false;
+                    Visibility::Default
+                } else {
+                    Visibility::Hidden
+                }
             } else {
                 // This instance might be useful in a downstream crate.
                 *can_be_internalized = false;
@@ -867,7 +975,12 @@ fn mono_item_visibility<'tcx>(
         } else {
             // We are not exporting generics or the definition is not reachable
             // for downstream crates, we can internalize its instantiations.
-            Visibility::Hidden
+            if hot_cold_split {
+                *can_be_internalized = false;
+                Visibility::Default
+            } else {
+                Visibility::Hidden
+            }
         }
     } else {
         // If this isn't a generic function then we mark this a `Default` if
@@ -926,7 +1039,12 @@ fn mono_item_visibility<'tcx>(
             *can_be_internalized = false;
         }
 
-        Visibility::Hidden
+        if hot_cold_split {
+            *can_be_internalized = false;
+            Visibility::Default
+        } else {
+            Visibility::Hidden
+        }
     }
 }
 
@@ -1310,6 +1428,29 @@ fn dump_mono_items_stats<'tcx>(
     }
 
     Ok(())
+}
+
+/// Read the hot function list file produced by the PGO profile analysis in
+/// cargo-autosplit.sh. The file contains one function symbol name per line.
+/// Returns an empty `HashSet` if the file cannot be read or doesn't exist.
+fn read_hot_function_list(path: &Path) -> FxHashSet<String> {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            debug!("hot-cold-split: could not open hot function list '{}': {}", path.display(), e);
+            return FxHashSet::default();
+        }
+    };
+    let reader = BufReader::new(file);
+    reader.lines().filter_map(|line| {
+        let line = line.ok()?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }).collect()
 }
 
 pub(crate) fn provide(providers: &mut Providers) {

@@ -16,6 +16,8 @@
 //! never get replaced.
 
 use std::env;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::Instant;
@@ -30,6 +32,29 @@ mod shared_helpers;
 
 #[path = "../utils/proc_macro_deps.rs"]
 mod proc_macro_deps;
+
+/// Check whether two paths refer to the same file (handles hard links).
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(ma), Ok(mb)) => {
+            #[cfg(unix)]
+            {
+                ma.dev() == mb.dev() && ma.ino() == mb.ino()
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                ma.volume_serial_number() == mb.volume_serial_number()
+                    && ma.file_index() == mb.file_index()
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                a == b
+            }
+        }
+        _ => a == b,
+    }
+}
 
 fn main() {
     let orig_args = env::args_os().skip(1).collect::<Vec<_>>();
@@ -86,7 +111,7 @@ fn main() {
         // Cargo also sometimes doesn't pass the `.exe` suffix on Windows - add it manually.
         let current_exe = env::current_exe().expect("couldn't get path to rustc shim");
         let arg0 = exe(args[0].to_str().expect("only utf8 paths are supported"), &host);
-        if Path::new(&arg0) == current_exe {
+        if same_file(Path::new(&arg0), &current_exe) {
             args.remove(0);
         }
         rustc_real

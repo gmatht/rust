@@ -5,6 +5,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/Lint.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #if LLVM_VERSION_GE(22, 0)
 #include "llvm/Analysis/RuntimeLibcallInfo.h"
@@ -48,6 +49,11 @@
 #include "llvm/Transforms/Instrumentation/RealtimeSanitizer.h"
 #include "llvm/Transforms/Instrumentation/ThreadSanitizer.h"
 #include "llvm/Transforms/Scalar/AnnotationRemarks.h"
+#if LLVM_VERSION_GE(22, 0)
+#include "llvm/Transforms/IPO/HotColdSplitting.h"
+#else
+#include "llvm/Transforms/Scalar/HotColdSplitting.h"
+#endif
 #include "llvm/Transforms/Utils/CanonicalizeAliases.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
 #include "llvm/Transforms/Utils/NameAnonGlobals.h"
@@ -564,7 +570,7 @@ extern "C" LLVMRustResult LLVMRustOptimize(
     LLVMRustSelfProfileBeforePassCallback BeforePassCallback,
     LLVMRustSelfProfileAfterPassCallback AfterPassCallback,
     const char *ExtraPasses, size_t ExtraPassesLen, const char *LLVMPlugins,
-    size_t LLVMPluginsLen) {
+    size_t LLVMPluginsLen, bool HotColdSplit) {
   Module *TheModule = unwrap(ModuleRef);
   TargetMachine *TM = unwrap(TMRef);
   OptimizationLevel OptLevel = fromRust(OptLevelRust);
@@ -709,6 +715,71 @@ extern "C" LLVMRustResult LLVMRustOptimize(
           // so use atomics for coverage counters
           Options.Atomic = true;
           MPM.addPass(InstrProfilingLoweringPass(Options, false));
+        });
+  }
+
+  // When -Z hot-cold-split is enabled, set Hot/MinSize/Cold attributes
+  // based on the CGU name suffix (.hot or .cold).
+  // NOTE: This runs at PipelineStartEP, which fires before PGO annotation
+  // passes in LLVM's new PM. Adding function attributes here changes the
+  // function's IR *before* the PGO hash is fetched for matching, causing
+  // PGO hash mismatches. So we add these attributes AFTER the optimization
+  // pipeline by using a custom Module pass scheduled after PGO annotation.
+  if (HotColdSplit) {
+    // Instead of PipelineStartEP, use OptimizerLastEP callback to add
+    // attributes after PGO annotation has completed.
+    OptimizerLastEPCallbacks.push_back(
+        [](ModulePassManager &MPM, OptimizationLevel Level,
+           ThinOrFullLTOPhase) {
+          struct MarkHotColdFromName
+              : public PassInfoMixin<MarkHotColdFromName> {
+            PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+              StringRef Name = M.getName();
+              bool Changed = false;
+              for (Function &F : M) {
+                if (F.isDeclaration())
+                  continue;
+                if (Name.contains(".hot")) {
+                  F.addFnAttr(Attribute::Hot);
+                  Changed = true;
+                } else if (Name.contains(".cold")) {
+                  F.addFnAttr(Attribute::MinSize);
+                  F.addFnAttr(Attribute::Cold);
+                  Changed = true;
+                }
+              }
+              return Changed ? PreservedAnalyses::none()
+                             : PreservedAnalyses::all();
+            }
+          };
+          MPM.addPass(MarkHotColdFromName());
+        });
+  }
+
+  // When -Z hot-cold-split is enabled with PGO, mark cold functions with
+  // minsize attribute so LLVM produces smaller code for cold regions.
+  if (HotColdSplit && OptLevel == OptimizationLevel::O3) {
+    PipelineStartEPCallbacks.push_back(
+        [](ModulePassManager &MPM, OptimizationLevel Level) {
+          struct MarkColdWithMinSize
+              : public PassInfoMixin<MarkColdWithMinSize> {
+            PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+              bool Changed = false;
+              auto &PSI = AM.getResult<ProfileSummaryAnalysis>(M);
+              for (Function &F : M) {
+                if (F.isDeclaration())
+                  continue;
+                if (PSI.isFunctionEntryCold(&F) ||
+                    F.hasFnAttribute(Attribute::Cold)) {
+                  F.addFnAttr(Attribute::MinSize);
+                  Changed = true;
+                }
+              }
+              return Changed ? PreservedAnalyses::none()
+                             : PreservedAnalyses::all();
+            }
+          };
+          MPM.addPass(MarkColdWithMinSize());
         });
   }
 

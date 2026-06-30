@@ -2397,6 +2397,13 @@ options! {
         "allow deducing higher-ranked outlives assumptions from coroutines when proving auto traits"),
     hint_mostly_unused: bool = (false, parse_bool, [TRACKED],
         "hint that most of this crate will go unused, to minimize work for uncalled functions"),
+    hot_cold_split: bool = (false, parse_bool, [TRACKED],
+        "the compiler will split each crate into hot and cold codegen units, \
+         compiling hot functions at O3 and cold functions at Oz (default: no)"),
+    hot_cold_threshold: u32 = (90, parse_number, [TRACKED],
+        "CPU time percentage threshold for classifying functions as hot (default: 90)"),
+    hot_function_list: Option<PathBuf> = (None, parse_opt_pathbuf, [UNTRACKED],
+        "path to a file listing function symbols to treat as hot"),
     human_readable_cgu_names: bool = (false, parse_bool, [TRACKED],
         "generate human-readable, predictable names for codegen units (default: no)"),
     identify_regions: bool = (false, parse_bool, [UNTRACKED],

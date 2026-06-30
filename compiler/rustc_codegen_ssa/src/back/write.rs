@@ -347,6 +347,9 @@ pub struct CodegenContext {
     /// The incremental compilation session directory, or None if we are not
     /// compiling incrementally
     pub incr_comp_session_dir: Option<PathBuf>,
+    /// `true` if `-Z hot-cold-split` is enabled, causing LLVM to compile hot functions at O3
+    /// and cold functions at Oz when used with PGO profile-use data.
+    pub hot_cold_split: bool,
     /// `true` if the codegen should be run in parallel.
     ///
     /// Depends on [`ExtraBackendMethods::supports_parallel()`] and `-Zno_parallel_backend`.
@@ -1317,6 +1320,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
         split_debuginfo: tcx.sess.split_debuginfo(),
         split_dwarf_kind: tcx.sess.opts.unstable_opts.split_dwarf_kind,
         parallel: backend.supports_parallel() && !sess.opts.unstable_opts.no_parallel_backend,
+        hot_cold_split: sess.opts.unstable_opts.hot_cold_split,
         pointer_size: tcx.data_layout.pointer_size(),
         invocation_temp: sess.invocation_temp.clone(),
     };

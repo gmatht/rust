@@ -67,6 +67,8 @@ pub struct ModuleCodegen<M> {
     pub kind: ModuleKind,
     /// Saving the ThinLTO buffer for embedding in the object file.
     pub thin_lto_buffer: Option<Vec<u8>>,
+    /// Per-module optimization level override. `None` means use the global default.
+    pub opt_level: Option<rustc_session::config::OptLevel>,
 }
 
 impl<M> ModuleCodegen<M> {
@@ -76,6 +78,17 @@ impl<M> ModuleCodegen<M> {
             module_llvm: module,
             kind: ModuleKind::Regular,
             thin_lto_buffer: None,
+            opt_level: None,
+        }
+    }
+
+    pub fn new_regular_with_opt_level(name: impl Into<String>, module: M, opt_level: Option<rustc_session::config::OptLevel>) -> Self {
+        Self {
+            name: name.into(),
+            module_llvm: module,
+            kind: ModuleKind::Regular,
+            thin_lto_buffer: None,
+            opt_level,
         }
     }
 
@@ -85,6 +98,7 @@ impl<M> ModuleCodegen<M> {
             module_llvm: module,
             kind: ModuleKind::Allocator,
             thin_lto_buffer: None,
+            opt_level: None,
         }
     }
 

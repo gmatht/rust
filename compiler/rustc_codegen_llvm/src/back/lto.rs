@@ -589,7 +589,7 @@ pub(crate) fn run_pass_manager(
     //      llvm/lib/LTO/LTOCodeGenerator.cpp
     debug!("running the pass manager");
     let opt_stage = if thin { llvm::OptStage::ThinLTO } else { llvm::OptStage::FatLTO };
-    let opt_level = config.opt_level.unwrap_or(config::OptLevel::No);
+    let post_link_opt = if cgcx.hot_cold_split { config::OptLevel::SizeMin } else { config.opt_level.unwrap_or(config::OptLevel::No) };
 
     // The PostAD behavior is the same that we would have if no autodiff was used.
     // It will run the default optimization pipeline. If AD is enabled we select
@@ -606,7 +606,7 @@ pub(crate) fn run_pass_manager(
 
     unsafe {
         write::llvm_optimize(
-            cgcx, prof, dcx, module, None, None, config, opt_level, opt_stage, stage,
+            cgcx, prof, dcx, module, None, None, config, post_link_opt, opt_stage, stage,
         );
     }
 
@@ -616,7 +616,7 @@ pub(crate) fn run_pass_manager(
         if !config.autodiff.contains(&config::AutoDiff::NoPostopt) {
             unsafe {
                 write::llvm_optimize(
-                    cgcx, prof, dcx, module, None, None, config, opt_level, opt_stage, stage,
+                    cgcx, prof, dcx, module, None, None, config, post_link_opt, opt_stage, stage,
                 );
             }
         }

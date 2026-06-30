@@ -2419,6 +2419,7 @@ unsafe extern "C" {
         ExtraPassesLen: size_t,
         LLVMPlugins: *const c_char,
         LLVMPluginsLen: size_t,
+        HotColdSplit: bool,
     ) -> LLVMRustResult;
     pub(crate) fn LLVMRustPrintModule(
         M: &Module,

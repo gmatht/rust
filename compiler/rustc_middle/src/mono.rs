@@ -354,6 +354,8 @@ pub struct CodegenUnit<'tcx> {
     /// True if this is CGU is used to hold code coverage information for dead code,
     /// false otherwise.
     is_code_coverage_dead_code_cgu: bool,
+    /// Optimization level for this CGU. `None` means use the global default.
+    opt_level: Option<OptLevel>,
 }
 
 /// Auxiliary info about a `MonoItem`.
@@ -408,6 +410,18 @@ impl<'tcx> CodegenUnit<'tcx> {
             size_estimate: 0,
             primary: false,
             is_code_coverage_dead_code_cgu: false,
+            opt_level: None,
+        }
+    }
+
+    pub fn new_with_opt_level(name: Symbol, opt_level: Option<OptLevel>) -> CodegenUnit<'tcx> {
+        CodegenUnit {
+            name,
+            items: Default::default(),
+            size_estimate: 0,
+            primary: false,
+            is_code_coverage_dead_code_cgu: false,
+            opt_level,
         }
     }
 
@@ -437,6 +451,14 @@ impl<'tcx> CodegenUnit<'tcx> {
 
     pub fn is_code_coverage_dead_code_cgu(&self) -> bool {
         self.is_code_coverage_dead_code_cgu
+    }
+
+    pub fn opt_level(&self) -> Option<OptLevel> {
+        self.opt_level
+    }
+
+    pub fn set_opt_level(&mut self, opt_level: Option<OptLevel>) {
+        self.opt_level = opt_level;
     }
 
     /// Marks this CGU as the one used to contain code coverage information for dead code.

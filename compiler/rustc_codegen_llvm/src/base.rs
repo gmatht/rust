@@ -175,7 +175,12 @@ pub(crate) fn compile_codegen_unit(
             }
         }
 
-        ModuleCodegen::new_regular(cgu_name.to_string(), llvm_module)
+        let cgu_opt_level = cgu.opt_level();
+        if let Some(opt_level) = cgu_opt_level {
+            ModuleCodegen::new_regular_with_opt_level(cgu_name.to_string(), llvm_module, Some(opt_level))
+        } else {
+            ModuleCodegen::new_regular(cgu_name.to_string(), llvm_module)
+        }
     }
 
     (module, cost)
