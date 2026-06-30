@@ -174,7 +174,9 @@ where
 
     // Hot/cold split: when -Z hot-cold-split is enabled, determine per-CGU
     // opt-level based on the hot function list and store in a side channel
-    // for ThinLTO post-link use (lto.rs).
+    // for ThinLTO post-link use (lto.rs). Mixed CGUs (those containing both
+    // hot and cold items) are split into separate .o3 (hot) and .oz (cold)
+    // CGUs so that cold code benefits from Oz codegen during post-link.
     //
     // CRITICAL: We do NOT call cgu.set_opt_level() because that changes the
     // LLVM pre-PGO optimization pipeline for cold CGUs (e.g. skips
@@ -189,31 +191,69 @@ where
     // applied during ThinLTO post-link only (lto.rs::run_pass_manager reads it
     // via rustc_session::config::get_per_cgu_opt_level).
     //
-    // CGU names are also NOT changed (no .o3/.oz suffix) to keep module
-    // identifiers identical between phases.
+    // CGU splitting (.o3/.oz suffixes) is done so that hot and cold items are
+    // in different CGUs. The same hot-function-list is passed in BOTH Phase 1
+    // and Phase 2, so CGU structure is identical between the PGO-generate and
+    // PGO-use phases, avoiding hash mismatches.
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
             let hot_funcs = read_hot_function_list(hot_func_path);
             if !hot_funcs.is_empty() {
+                let mut split_cgus: Vec<CodegenUnit<'tcx>> = Vec::new();
+                let mut cgu_names_to_remove: Vec<Symbol> = Vec::new();
+
                 for cgu in codegen_units.iter() {
-                    let has_hot = cgu.items().keys().any(|item| {
+                    let mut hot_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
+                    let mut cold_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
+
+                    for (item, data) in cgu.items().iter() {
                         let sym_name = item.symbol_name(tcx).name.to_string();
-                        hot_funcs.contains(&sym_name)
-                    });
-                    let has_cold = cgu.items().keys().any(|item| {
-                        let sym_name = item.symbol_name(tcx).name.to_string();
-                        !hot_funcs.contains(&sym_name)
-                    });
-                    if has_hot && !has_cold {
-                        // All-hot CGU: O3 post-link
-                        set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
-                    } else if !has_hot && has_cold {
+                        if hot_funcs.contains(&sym_name) {
+                            hot_items.push((*item, *data));
+                        } else {
+                            cold_items.push((*item, *data));
+                        }
+                    }
+
+                    if hot_items.is_empty() {
                         // All-cold CGU: Oz post-link
                         set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
-                    } else {
-                        // Mixed CGU: O3 post-link (conservative).
+                    } else if cold_items.is_empty() {
+                        // All-hot CGU: O3 post-link
                         set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
+                    } else {
+                        // Mixed CGU: split into .o3 (hot) and .oz (cold) CGUs
+                        let cgu_name = cgu.name();
+                        let base_name = cgu_name.as_str();
+                        let hot_name = Symbol::intern(&format!("{base_name}.o3"));
+                        let cold_name = Symbol::intern(&format!("{base_name}.oz"));
+
+                        let mut hot_cgu = CodegenUnit::new(hot_name);
+                        for (item, data) in &hot_items {
+                            hot_cgu.items_mut().insert(*item, *data);
+                        }
+                        hot_cgu.compute_size_estimate();
+                        set_per_cgu_opt_level(hot_name.as_str(), OptLevel::Aggressive);
+
+                        let mut cold_cgu = CodegenUnit::new(cold_name);
+                        for (item, data) in &cold_items {
+                            cold_cgu.items_mut().insert(*item, *data);
+                        }
+                        cold_cgu.compute_size_estimate();
+                        set_per_cgu_opt_level(cold_name.as_str(), OptLevel::SizeMin);
+
+                        split_cgus.push(hot_cgu);
+                        split_cgus.push(cold_cgu);
+                        cgu_names_to_remove.push(cgu.name());
                     }
+                }
+
+                // Remove original mixed CGUs and add split ones
+                if !cgu_names_to_remove.is_empty() {
+                    codegen_units.retain(|cgu| !cgu_names_to_remove.contains(&cgu.name()));
+                    codegen_units.extend(split_cgus);
+                    // Re-sort to maintain deterministic ordering
+                    codegen_units.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
                 }
             }
         }

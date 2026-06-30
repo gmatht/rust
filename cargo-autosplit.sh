@@ -4,6 +4,22 @@
 # Uses PGO profiling + rustc's -Z hot-cold-split to compile hot functions at
 # O3 and cold functions at Oz, entirely automatically.
 #
+# Strategy (3-phase):
+#   Phase 0 (warm-up):  Build at O3 + PGO generate (no splitting).  Run to
+#                       collect initial PGO profiles.
+#   Phase 0.5:           Merge Phase-0 profiles, extract hot function list.
+#   Phase 1 (splitting): Build at O3 + PGO generate WITH -Z hot-cold-split
+#                        using the hot-function-list from Phase 0.5.  This
+#                        splits mixed CGUs into .o3 / .oz CGUs and produces
+#                        PGO profiles under the split CGU structure.
+#   Phase 1.5:           Merge Phase-1 profiles → merged.profdata.
+#   Phase 2 (final):     Build at O3 + PGO use WITH -Z hot-cold-split using
+#                        the SAME hot-function-list as Phase 1.  CGU structure
+#                        is identical to Phase 1, so PGO hashes match.
+#                        Per-CGU opt-level is applied during ThinLTO post-link
+#                        only (via side-channel in rustc_session::config),
+#                        so pre-link codegen is pure O3 for all CGUs.
+#
 # Usage:  cargo-autosplit.sh <cargo args...>
 #
 # Example:
@@ -48,33 +64,37 @@ export RUSTC_WRAPPER=
 unset CARGO_PROFILE_RELEASE_OPT_LEVEL
 unset CARGO_PROFILE_RELEASE_LTO
 
-# Phase 1 — PGO profile generation at O3
-echo "=== [cargo-autosplit] Phase 1 — PGO profile generation (O3) ===" >&2
+# ============================================================
+# Phase 0 — Warm-up: PGO profile generation at O3 (no splitting)
+# ============================================================
+echo "=== [cargo-autosplit] Phase 0 — warm-up PGO generation (O3, no splitting) ===" >&2
 RUSTFLAGS="-C profile-generate=$PGO_DIR -C opt-level=3" cargo "$@"
 
-# Phase 1b — run every built executable to collect profiles
+# Run every built executable to collect Phase-0 profiles
 REL_DIR="${CARGO_TARGET_DIR:-target}/release"
-echo "=== [cargo-autosplit] Collecting PGO profiles ===" >&2
+echo "=== [cargo-autosplit] Collecting Phase-0 profiles ===" >&2
 for f in "$REL_DIR"/*; do
     if [ -f "$f" ] && [ -x "$f" ] && ! [ -d "$f" ]; then
         if file "$f" 2>/dev/null | grep -q 'ELF.*executable'; then
             echo "  running $f ..." >&2
-            "$f" 5 >/dev/null 2>&1 || true
+            "$f" 3 >/dev/null 2>&1 || true
         fi
     fi
 done
 
-# Merge raw profiles
-echo "=== [cargo-autosplit] Merging profiles ===" >&2
-LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" $PROFDATA merge -o "$PGO_DIR/merged.profdata" "$PGO_DIR"/default_*.profraw 2>&1
+# Move Phase-0 raw profiles aside so Phase 1 doesn't overwrite them
+for f in "$PGO_DIR"/default_*.profraw; do
+    [ -f "$f" ] && mv "$f" "${f/default_/phase0_}"
+done
 
-# Phase 1.5 — extract hot function list from merged PGO profile.
-# Functions with first-block count above 1% of the maximum are classified as
-# hot; everything else is cold.  Names have CGU prefixes (e.g.
-# "prime_finder.xxx-cgu.N;symname") stripped so they match the symbol names
-# that rustc's is_item_hot() checks.
-echo "=== [cargo-autosplit] Extracting hot function list ===" >&2
-LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" "$PROFDATA" show --all-functions --counts "$PGO_DIR/merged.profdata" 2>&1 \
+# ============================================================
+# Phase 0.5 — Merge Phase-0 profiles and extract hot function list
+# ============================================================
+echo "=== [cargo-autosplit] Merging Phase-0 profiles ===" >&2
+LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" $PROFDATA merge -o "$PGO_DIR/phase0_merged.profdata" "$PGO_DIR"/phase0_*.profraw 2>&1
+
+echo "=== [cargo-autosplit] Extracting hot function list from Phase-0 profiles ===" >&2
+LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" "$PROFDATA" show --all-functions --counts "$PGO_DIR/phase0_merged.profdata" 2>&1 \
     | awk '
 BEGIN {
     name = ""
@@ -135,13 +155,53 @@ echo "  Found $NUM_HOT hot functions (threshold >1% of max)" >&2
 
 rm -f "$REL_DIR/.cargo-lock" "$REL_DIR/.cargo-ok" 2>/dev/null || true
 
-# Phase 2 — rebuild with PGO profile-use + O3.
-# Hot/cold per-CGU opt-level via -Z hot-cold-split is NOT used because it
-# changes the LLVM pre-PGO optimization pipeline (CallSiteSplittingPass,
-# pre-inliner thresholds) differently for O3 vs Oz CGUs, causing PGO hash
-# mismatches and discarded profile data.
-# PGO profile-use alone guides LLVM's hot/code classification.
-echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO) ===" >&2
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3" cargo "$@"
+HOT_COLD_FLAGS=""
+if [ "$NUM_HOT" -gt 0 ]; then
+    HOT_COLD_FLAGS="-Z hot-cold-split -Z hot-function-list=$PGO_DIR/hot_functions.txt"
+    echo "=== [cargo-autosplit] Hot function list has $NUM_HOT entries, enabling CGU splitting ===" >&2
+else
+    echo "=== [cargo-autosplit] No hot functions found, skipping CGU splitting ===" >&2
+fi
+
+# Clean build artifacts from Phase 0 (release dir only; keep profile data)
+rm -rf "$REL_DIR"
+
+# ============================================================
+# Phase 1 — PGO profile generation with hot/cold CGU splitting
+# ============================================================
+echo "=== [cargo-autosplit] Phase 1 — PGO generation with hot-cold-split ===" >&2
+RUSTFLAGS="-C profile-generate=$PGO_DIR -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
+
+# Run every built executable to collect Phase-1 profiles
+echo "=== [cargo-autosplit] Collecting Phase-1 profiles ===" >&2
+for f in "$REL_DIR"/*; do
+    if [ -f "$f" ] && [ -x "$f" ] && ! [ -d "$f" ]; then
+        if file "$f" 2>/dev/null | grep -q 'ELF.*executable'; then
+            echo "  running $f ..." >&2
+            "$f" 5 >/dev/null 2>&1 || true
+        fi
+    fi
+done
+
+# Move Phase-1 raw profiles aside
+for f in "$PGO_DIR"/default_*.profraw; do
+    [ -f "$f" ] && mv "$f" "${f/default_/phase1_}"
+done
+
+rm -f "$REL_DIR/.cargo-lock" "$REL_DIR/.cargo-ok" 2>/dev/null || true
+
+# ============================================================
+# Phase 1.5 — Merge Phase-1 profiles for final PGO use
+# ============================================================
+echo "=== [cargo-autosplit] Merging Phase-1 profiles ===" >&2
+LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" $PROFDATA merge -o "$PGO_DIR/merged.profdata" "$PGO_DIR"/phase1_*.profraw 2>&1
+
+rm -rf "$REL_DIR"
+
+# ============================================================
+# Phase 2 — Final build with PGO use + hot/cold CGU splitting
+# ============================================================
+echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO + hot-cold-split) ===" >&2
+RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
 
 echo "=== [cargo-autosplit] Done ===" >&2
