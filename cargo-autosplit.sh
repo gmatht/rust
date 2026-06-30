@@ -201,7 +201,10 @@ rm -rf "$REL_DIR"
 # ============================================================
 # Phase 2 — Final build with PGO use + hot/cold CGU splitting
 # ============================================================
-echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO + hot-cold-split) ===" >&2
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
+echo "=== [cargo-autosplit] Phase 2 — build (O3 + hot-cold-split, no PGO) ===" >&2
+# No PGO profile-use in Phase 2 to avoid PGO code-size overhead (~237K).
+# Hot/cold split alone (from Phase 0 hot function list) guides CGU opt-levels.
+# Phase 1 PGO profiles are only used to validate CGU structure, not for codegen.
+RUSTFLAGS="-C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
 
 echo "=== [cargo-autosplit] Done ===" >&2
