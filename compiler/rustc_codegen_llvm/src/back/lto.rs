@@ -589,21 +589,14 @@ pub(crate) fn run_pass_manager(
     //      llvm/lib/LTO/LTOCodeGenerator.cpp
     debug!("running the pass manager");
     let opt_stage = if thin { llvm::OptStage::ThinLTO } else { llvm::OptStage::FatLTO };
-    // Per-module opt-level encoded in CGU name suffix:
-    // .o3 = Aggressive (O3) for hot CGUs
-    // .oz = SizeMin (Oz) for cold CGUs
-    // No suffix = use the configured opt-level (deps without hot-cold-split info)
-    let post_link_opt = if cgcx.hot_cold_split {
-        if module.name.contains(".o3") {
-            config::OptLevel::Aggressive
-        } else if module.name.contains(".oz") {
-            config::OptLevel::SizeMin
-        } else {
-            config.opt_level.unwrap_or(config::OptLevel::No)
-        }
-    } else {
-        config.opt_level.unwrap_or(config::OptLevel::No)
-    };
+    // Post-link opt-level: CGU names are NOT renamed (no .o3/.oz suffix) to
+    // keep PGO hashes matching between Phase 1 and Phase 2. The per-CGU opt-level
+    // is applied during pre-link codegen only (via set_opt_level in partitioning.rs).
+    // For ThinLTO post-link, we use the global configured opt-level for all modules.
+    // Cold CGUs got SizeMin pre-link, which produces compact IR; post-link O3
+    // may add some optimizations but the size savings from pre-link SizeMin
+    // are preserved.
+    let post_link_opt = config.opt_level.unwrap_or(config::OptLevel::No);
 
     // The PostAD behavior is the same that we would have if no autodiff was used.
     // It will run the default optimization pipeline. If AD is enabled we select

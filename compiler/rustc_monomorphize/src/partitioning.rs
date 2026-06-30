@@ -173,11 +173,23 @@ where
     }
 
     // Hot/cold split: when -Z hot-cold-split is enabled, set per-CGU opt-level
-    // based on the hot function list. NO CGU splitting (caused PGO hash mismatches
-    // and 238K object overhead). Instead, keep CGU structure identical to Phase 1
-    // (same item groupings → same internalization → same PGO hashes) and encode
-    // the opt-level in the CGU name (.o3/.oz suffix) so ThinLTO post-link
-    // (lto.rs) can apply the correct per-module opt-level.
+    // based on the hot function list.
+    //
+    // CGU names are NOT changed (no .o3/.oz suffix) because renaming changes the
+    // LLVM module identifier, which causes PGO hash mismatches between Phase 1
+    // (profile-generate, no hot-cold-split) and Phase 2 (profile-use, hot-cold-split).
+    // With the same CGU names, the module identifiers are identical, PGO hashes
+    // match, and profile data is fully used.
+    //
+    // The per-CGU opt-level applies to pre-link codegen only. ThinLTO post-link
+    // (lto.rs) uses the global opt-level (O3) for all modules, which means cold
+    // CGUs may get some additional O3 optimization during LTO post-link. However,
+    // the pre-link SizeMin pass produces significantly smaller cold code, and
+    // matching PGO hashes ensures hot code gets full PGO-guided optimization.
+    //
+    // For Phase 1 builds (no hot-cold-split, no-hot-function-list), the CGU
+    // structure is identical to Phase 2 builds (with hot-cold-split + list),
+    // guaranteeing PGO profile compatibility.
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
             let hot_funcs = read_hot_function_list(hot_func_path);
@@ -192,21 +204,15 @@ where
                         !hot_funcs.contains(&sym_name)
                     });
                     if has_hot && !has_cold {
-                        // All-hot CGU: O3 + .o3 suffix
+                        // All-hot CGU: O3
                         cgu.set_opt_level(Some(OptLevel::Aggressive));
-                        let new_name = Symbol::intern(&format!("{}.o3", cgu.name()));
-                        cgu.set_name(new_name);
                     } else if !has_hot && has_cold {
-                        // All-cold CGU: Oz + .oz suffix
+                        // All-cold CGU: Oz
                         cgu.set_opt_level(Some(OptLevel::SizeMin));
-                        let new_name = Symbol::intern(&format!("{}.oz", cgu.name()));
-                        cgu.set_name(new_name);
                     } else {
-                        // Mixed CGU: keep O3 (conservative), .o3 suffix.
+                        // Mixed CGU: keep O3 (conservative).
                         // Not splitting avoids CGU overhead and PGO mismatches.
                         cgu.set_opt_level(Some(OptLevel::Aggressive));
-                        let new_name = Symbol::intern(&format!("{}.o3", cgu.name()));
-                        cgu.set_name(new_name);
                     }
                 }
             }
