@@ -110,7 +110,7 @@ BEGIN {
 }
 # Function name lines: start with 2 spaces, end with :
 /^  / && /:$/ {
-    if ($1 == "Counters:") next
+    if ($1 == "Counters:" || $1 == "Hash:") next
     if (name != "" && first_count > 0) {
         if (first_count > max_count) max_count = first_count
         gnames[name] = first_count
@@ -170,8 +170,9 @@ else
     echo "=== [cargo-autosplit] No hot functions found, skipping CGU splitting ===" >&2
 fi
 
-# Clean build artifacts from Phase 0 (release dir only; keep profile data)
-rm -rf "$REL_DIR"
+# Clean ALL build artifacts to force cargo to recompile EVERY crate with Phase 1 flags
+# (dependencies cached from Phase 0 without -Z hot-cold-split must be rebuilt)
+cargo clean 2>/dev/null || true
 
 # ============================================================
 # Phase 1 — PGO profile generation with hot/cold CGU splitting
@@ -203,7 +204,7 @@ rm -f "$REL_DIR/.cargo-lock" "$REL_DIR/.cargo-ok" 2>/dev/null || true
 echo "=== [cargo-autosplit] Merging Phase-1 profiles ===" >&2
 LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" $PROFDATA merge -o "$PGO_DIR/merged.profdata" "$PGO_DIR"/phase1_*.profraw 2>&1
 
-rm -rf "$REL_DIR"
+cargo clean 2>/dev/null || true
 
 # ============================================================
 # Phase 2 — Final build with PGO use + hot/cold CGU splitting
