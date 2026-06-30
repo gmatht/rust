@@ -218,9 +218,9 @@ where
                     let mut cold_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
 
                     for (item, data) in cgu.items().iter() {
-                        // Use the Rust def path (e.g. "prime_finder::main") to
-                        // match against the PGO-extracted hot function list,
-                        // which also uses demangled LLVM IR function names.
+                        // Match against the Rust path (demangled), which matches
+                        // the demangled names produced by the PGO extraction
+                        // pipeline (llvm-profdata → llvm-cxxfilt).
                         let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
                         if hot_funcs.contains(&item_name) {
                             hot_items.push((*item, *data));

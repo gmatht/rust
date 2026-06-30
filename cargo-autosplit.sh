@@ -52,6 +52,13 @@ else
 fi
 RUSTC_WRAPPER_SCRIPT="${SCRIPT_DIR}/rustc-sysroot-wrapper.sh"
 
+# llvm-cxxfilt for demangling Rust symbol names from PGO profiles
+if [ -x "${SCRIPT_DIR}/build/x86_64-unknown-linux-gnu/ci-llvm/bin/llvm-cxxfilt" ]; then
+    CXXFILT="${SCRIPT_DIR}/build/x86_64-unknown-linux-gnu/ci-llvm/bin/llvm-cxxfilt"
+else
+    CXXFILT="c++filt"
+fi
+
 # LLVM library paths for llvm-profdata
 RUSTC_LLVM_DIR="${SCRIPT_DIR}/build/x86_64-unknown-linux-gnu/stage0-sysroot/lib/rustlib/x86_64-unknown-linux-gnu/lib"
 RUSTC_LLVM_LIB="${SCRIPT_DIR}/build/x86_64-unknown-linux-gnu/stage0-sysroot/lib"
@@ -148,7 +155,7 @@ END {
         }
     }
 }
-' | sort -u > "$PGO_DIR/hot_functions.txt"
+' | $CXXFILT 2>/dev/null | sort -u > "$PGO_DIR/hot_functions.txt"
 
 NUM_HOT=$(wc -l < "$PGO_DIR/hot_functions.txt")
 echo "  Found $NUM_HOT hot functions (threshold >1% of max)" >&2
