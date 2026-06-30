@@ -589,9 +589,21 @@ pub(crate) fn run_pass_manager(
     //      llvm/lib/LTO/LTOCodeGenerator.cpp
     debug!("running the pass manager");
     let opt_stage = if thin { llvm::OptStage::ThinLTO } else { llvm::OptStage::FatLTO };
-    // Per-CGU opt-level via CGU naming is removed; PGO + per-package cargo config
-    // (deps Oz, main O3) handles hot/cold. Keep the module's configured opt-level.
-    let post_link_opt = config.opt_level.unwrap_or(config::OptLevel::No);
+    // Per-module opt-level encoded in CGU name suffix:
+    // .o3 = Aggressive (O3) for hot CGUs
+    // .oz = SizeMin (Oz) for cold CGUs
+    // No suffix = use the configured opt-level (deps without hot-cold-split info)
+    let post_link_opt = if cgcx.hot_cold_split {
+        if module.name.contains(".o3") {
+            config::OptLevel::Aggressive
+        } else if module.name.contains(".oz") {
+            config::OptLevel::SizeMin
+        } else {
+            config.opt_level.unwrap_or(config::OptLevel::No)
+        }
+    } else {
+        config.opt_level.unwrap_or(config::OptLevel::No)
+    };
 
     // The PostAD behavior is the same that we would have if no autodiff was used.
     // It will run the default optimization pipeline. If AD is enabled we select

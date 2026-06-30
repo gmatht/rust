@@ -113,6 +113,7 @@ use rustc_middle::mono::{
     CodegenUnit, CodegenUnitNameBuilder, InstantiationMode, MonoItem, MonoItemData,
     MonoItemPartitions, Visibility,
 };
+use rustc_session::config::OptLevel;
 use rustc_middle::ty::print::{characteristic_def_id_of_type, with_no_trimmed_paths};
 use rustc_middle::ty::{self, InstanceKind, TyCtxt};
 use rustc_middle::util::Providers;
@@ -171,13 +172,46 @@ where
         debug_dump(tcx, "MERGE", &codegen_units);
     }
 
-    // Hot/cold split via per-package opt-level + PGO, not CGU splitting.
-    // Splitting CGUs causes PGO hash mismatches (IR changes from different
-    // CGU structure + internalization decisions) and adds ~238K object overhead
-    // from extra CGUs. Instead, we use per-package opt-level via cargo config:
-    // dependencies at Oz, main crate at O3. PGO profile-use data (handled by
-    // LLVM's built-in hot/cold classification) guides optimization within the
-    // O3 pipeline, with cold functions getting less aggressive inlining.
+    // Hot/cold split: when -Z hot-cold-split is enabled, set per-CGU opt-level
+    // based on the hot function list. NO CGU splitting (caused PGO hash mismatches
+    // and 238K object overhead). Instead, keep CGU structure identical to Phase 1
+    // (same item groupings → same internalization → same PGO hashes) and encode
+    // the opt-level in the CGU name (.o3/.oz suffix) so ThinLTO post-link
+    // (lto.rs) can apply the correct per-module opt-level.
+    if tcx.sess.opts.unstable_opts.hot_cold_split {
+        if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
+            let hot_funcs = read_hot_function_list(hot_func_path);
+            if !hot_funcs.is_empty() {
+                for cgu in codegen_units.iter_mut() {
+                    let has_hot = cgu.items().keys().any(|item| {
+                        let sym_name = item.symbol_name(tcx).name.to_string();
+                        hot_funcs.contains(&sym_name)
+                    });
+                    let has_cold = cgu.items().keys().any(|item| {
+                        let sym_name = item.symbol_name(tcx).name.to_string();
+                        !hot_funcs.contains(&sym_name)
+                    });
+                    if has_hot && !has_cold {
+                        // All-hot CGU: O3 + .o3 suffix
+                        cgu.set_opt_level(Some(OptLevel::Aggressive));
+                        let new_name = Symbol::intern(&format!("{}.o3", cgu.name()));
+                        cgu.set_name(new_name);
+                    } else if !has_hot && has_cold {
+                        // All-cold CGU: Oz + .oz suffix
+                        cgu.set_opt_level(Some(OptLevel::SizeMin));
+                        let new_name = Symbol::intern(&format!("{}.oz", cgu.name()));
+                        cgu.set_name(new_name);
+                    } else {
+                        // Mixed CGU: keep O3 (conservative), .o3 suffix.
+                        // Not splitting avoids CGU overhead and PGO mismatches.
+                        cgu.set_opt_level(Some(OptLevel::Aggressive));
+                        let new_name = Symbol::intern(&format!("{}.o3", cgu.name()));
+                        cgu.set_name(new_name);
+                    }
+                }
+            }
+        }
+    }
 
     // Make as many symbols "internal" as possible, so LLVM has more freedom to
     // optimize.

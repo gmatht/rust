@@ -135,32 +135,12 @@ echo "  Found $NUM_HOT hot functions (threshold >1% of max)" >&2
 
 rm -f "$REL_DIR/.cargo-lock" "$REL_DIR/.cargo-ok" 2>/dev/null || true
 
-# Phase 2 — rebuild with PGO profile-use + per-package opt-level.
-# Dependencies are compiled at Oz (size-minimized), while the target crate
-# (prime-finder) gets O3 for hot code. PGO handles hot/cold classification
-# automatically within LLVM's optimization pipeline (cold functions get less
-# aggressive inlining). No CGU-level splitting — that caused PGO hash mismatches
-# by changing CGU structure between Phase 1 and Phase 2.
-echo "=== [cargo-autosplit] Phase 2 — optimize (deps=Oz, target=O3, PGO) ===" >&2
-# Note: $@ contains e.g. "build --release -p prime-finder"
-# We extract the first package name from -p to set its opt-level to 3.
-# All other packages (dependencies) get Oz via the default profile config.
-TARGET_CRATE=""
-PREV_ARG=""
-for arg in "$@"; do
-    if [ "$PREV_ARG" = "-p" ] && [ -n "$arg" ]; then
-        TARGET_CRATE="$arg"
-    fi
-    PREV_ARG="$arg"
-done
-# If no -p flag found, default to "prime-finder" for backward compatibility
-if [ -z "$TARGET_CRATE" ]; then
-    TARGET_CRATE="prime-finder"
-fi
-
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata" \
-cargo "$@" \
-    --config 'profile.release.opt-level="z"' \
-    --config "profile.release.package.\"${TARGET_CRATE}\".opt-level=3"
+# Phase 2 — rebuild with PGO profile-use + per-CGU opt-level.
+# The compiler sets per-CGU opt-levels based on the hot function list:
+# hot CGUs get O3 (.o3 suffix), cold CGUs get Oz (.oz suffix).
+# No CGU splitting (avoids CGU overhead and PGO hash mismatches).
+# ThinLTO post-link reads the .o3/.oz suffix to apply correct opt-level.
+echo "=== [cargo-autosplit] Phase 2 — build (hot=O3, cold=Oz) ===" >&2
+RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 -Z hot-cold-split -Z hot-function-list=$PGO_DIR/hot_functions.txt" cargo "$@"
 
 echo "=== [cargo-autosplit] Done ===" >&2
