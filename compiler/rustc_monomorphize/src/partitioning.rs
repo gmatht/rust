@@ -191,10 +191,21 @@ where
     // applied during ThinLTO post-link only (lto.rs::run_pass_manager reads it
     // via rustc_session::config::get_per_cgu_opt_level).
     //
-    // CGU splitting (.o3/.oz suffixes) is done so that hot and cold items are
-    // in different CGUs. The same hot-function-list is passed in BOTH Phase 1
-    // and Phase 2, so CGU structure is identical between the PGO-generate and
-    // PGO-use phases, avoiding hash mismatches.
+    // Hot/cold split: classify CGUs as hot (O3) or cold (Oz) based on the
+    // hot function list. Mixed CGUs (containing both hot and cold items) are
+    // split into separate .o3 (hot) and .oz (cold) CGUs.
+    //
+    // Unlike the original approach which only set the ThinLTO post-link
+    // opt-level via the side-channel, we ALSO call cgu.set_opt_level() here.
+    // This is safe because the SAME hot-function-list and -Z hot-cold-split
+    // are passed in BOTH Phase 1 (PGO generate) and Phase 2 (PGO use). The
+    // pre-PGO LLVM pipeline (CallSiteSplittingPass, pre-inliner thresholds)
+    // is identical between phases because both phases use the same CGU
+    // structure and opt-level assignments. Therefore, PGO hashes match.
+    //
+    // Cold CGUs get SizeMin during pre-link codegen (smaller base IR),
+    // and hot CGUs stay at the global O3. This way, cold code is genuinely
+    // compiled at Oz from the start, not just post-link-optimized.
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
             let hot_funcs = read_hot_function_list(hot_func_path);
@@ -202,7 +213,7 @@ where
                 let mut split_cgus: Vec<CodegenUnit<'tcx>> = Vec::new();
                 let mut cgu_names_to_remove: Vec<Symbol> = Vec::new();
 
-                for cgu in codegen_units.iter() {
+                for cgu in codegen_units.iter_mut() {
                     let mut hot_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
                     let mut cold_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
 
@@ -216,10 +227,11 @@ where
                     }
 
                     if hot_items.is_empty() {
-                        // All-cold CGU: Oz post-link
+                        // All-cold CGU: Oz for both pre-link and post-link
+                        cgu.set_opt_level(Some(OptLevel::SizeMin));
                         set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
                     } else if cold_items.is_empty() {
-                        // All-hot CGU: O3 post-link
+                        // All-hot CGU: O3 (default, no override needed)
                         set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
                     } else {
                         // Mixed CGU: split into .o3 (hot) and .oz (cold) CGUs
@@ -240,6 +252,7 @@ where
                             cold_cgu.items_mut().insert(*item, *data);
                         }
                         cold_cgu.compute_size_estimate();
+                        cold_cgu.set_opt_level(Some(OptLevel::SizeMin));
                         set_per_cgu_opt_level(cold_name.as_str(), OptLevel::SizeMin);
 
                         split_cgus.push(hot_cgu);
