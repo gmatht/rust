@@ -176,19 +176,11 @@ where
     // we implement the split at the CGU level by reading the hot function list.
     // CGUs containing only hot functions get O3; CGUs containing only cold
     // functions get Oz; mixed CGUs are split into separate hot and cold CGUs.
-    {
-        use std::io::Write;
-        let _ = writeln!(std::io::stderr(), "HOTCOLD_DEBUG: partition() called, hot_cold_split={:?} hot_func_list={:?} cgus={}",
-            tcx.sess.opts.unstable_opts.hot_cold_split,
-            tcx.sess.opts.unstable_opts.hot_function_list,
-            codegen_units.len());
-    }
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
             let hot_funcs = read_hot_function_list(hot_func_path);
             if !hot_funcs.is_empty() {
                 let mut split_cgus: Vec<CodegenUnit<'tcx>> = Vec::new();
-                let original_count = codegen_units.len();
                 for cgu in codegen_units.drain(..) {
                     let cgu_name = cgu.name();
                     let mut hot_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
@@ -244,11 +236,6 @@ where
                         if cgu.is_primary() { cold_cgu.make_primary(); }
                         split_cgus.push(cold_cgu);
                     }
-                }
-
-                tcx.dcx().note(format!("hot-cold-split: {} OG CGUs -> {} SPLIT CGUs, hot={}", original_count, split_cgus.len(), hot_funcs.len()));
-                for cgu in &split_cgus {
-                    tcx.dcx().note(format!("  CGU name={} items={} opt={:?} primary={}", cgu.name(), cgu.items().len(), cgu.opt_level(), cgu.is_primary()));
                 }
 
                 split_cgus.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
