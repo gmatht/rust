@@ -869,7 +869,6 @@ fn mono_item_visibility<'tcx>(
     can_export_generics: bool,
     always_export_generics: bool,
 ) -> Visibility {
-    let hot_cold_split = tcx.sess.opts.unstable_opts.hot_cold_split;
     let instance = match mono_item {
         // This is pretty complicated; see below.
         MonoItem::Fn(instance) => instance,
@@ -894,9 +893,6 @@ fn mono_item_visibility<'tcx>(
         }
 
         // These are all compiler glue and such, never exported, always hidden.
-        // When hot-cold-split is enabled, use Default visibility so ThinLTO
-        // can import these items across modules (needed when hot code at O3
-        // references items in Oz-compiled dependency CGUs).
         InstanceKind::VTableShim(..)
         | InstanceKind::ReifyShim(..)
         | InstanceKind::FnPtrShim(..)
@@ -906,12 +902,7 @@ fn mono_item_visibility<'tcx>(
         | InstanceKind::ConstructCoroutineInClosureShim { .. }
         | InstanceKind::DropGlue(..)
         | InstanceKind::CloneShim(..)
-        | InstanceKind::FnPtrAddrShim(..) => {
-            if hot_cold_split {
-                return Visibility::Default;
-            }
-            return Visibility::Hidden;
-        }
+        | InstanceKind::FnPtrAddrShim(..) => return Visibility::Hidden,
     };
 
     // Both the `start_fn` lang item and `main` itself should not be exported,
@@ -944,11 +935,6 @@ fn mono_item_visibility<'tcx>(
             // it available to downstream crates.
             *can_be_internalized = false;
             default_visibility(tcx, def_id, true)
-        } else if hot_cold_split {
-            // Hot-cold-split: default visibility lets ThinLTO import
-            // upstream monomorphizations across Oz/O3 CGU boundaries.
-            *can_be_internalized = false;
-            Visibility::Default
         } else {
             Visibility::Hidden
         };
@@ -959,13 +945,7 @@ fn mono_item_visibility<'tcx>(
             || (can_export_generics && tcx.codegen_fn_attrs(def_id).inline == InlineAttr::Never)
         {
             if tcx.is_unreachable_local_definition(def_id) {
-                if hot_cold_split {
-                    // Hot-cold-split: default visibility for ThinLTO import.
-                    *can_be_internalized = false;
-                    Visibility::Default
-                } else {
-                    Visibility::Hidden
-                }
+                Visibility::Hidden
             } else {
                 // This instance might be useful in a downstream crate.
                 *can_be_internalized = false;
@@ -974,12 +954,7 @@ fn mono_item_visibility<'tcx>(
         } else {
             // We are not exporting generics or the definition is not reachable
             // for downstream crates, we can internalize its instantiations.
-            if hot_cold_split {
-                *can_be_internalized = false;
-                Visibility::Default
-            } else {
-                Visibility::Hidden
-            }
+            Visibility::Hidden
         }
     } else {
         // If this isn't a generic function then we mark this a `Default` if
@@ -1038,12 +1013,7 @@ fn mono_item_visibility<'tcx>(
             *can_be_internalized = false;
         }
 
-        if hot_cold_split {
-            *can_be_internalized = false;
-            Visibility::Default
-        } else {
-            Visibility::Hidden
-        }
+        Visibility::Hidden
     }
 }
 
