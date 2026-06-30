@@ -246,16 +246,15 @@ where
 
     // Assign per-CGU opt-levels for hot/cold split CGUs.
     // Hot CGUs get Aggressive (O3) for maximum performance.
-    // Cold CGUs stay at the global O3 (no override) so their IR structure
-    // matches Phase 1 (PGO profiling at O3), avoiding PGO hash mismatches.
-    // Cold+MinSize function attributes (set by MarkHotColdFromName pass)
-    // guide LLVM to optimize cold functions for size within O3 pre-link.
-    // ThinLTO post-link uses SizeMin (Oz) for ALL modules (see lto.rs),
-    // which provides the final size optimization for cold code.
+    // Cold CGUs get SizeMin (Oz) so their code is genuinely small.
+    // This prevents pre-link O3 from generating large IR for cold code
+    // that post-link SizeMin cannot fully undo.
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         for cgu in codegen_units.iter_mut() {
             if cgu.name().as_str().ends_with(".hot") {
                 cgu.set_opt_level(Some(OptLevel::Aggressive));
+            } else if cgu.name().as_str().ends_with(".cold") {
+                cgu.set_opt_level(Some(OptLevel::SizeMin));
             }
         }
     }
@@ -870,6 +869,7 @@ fn mono_item_visibility<'tcx>(
     can_export_generics: bool,
     always_export_generics: bool,
 ) -> Visibility {
+    let hot_cold_split = tcx.sess.opts.unstable_opts.hot_cold_split;
     let instance = match mono_item {
         // This is pretty complicated; see below.
         MonoItem::Fn(instance) => instance,
@@ -894,6 +894,9 @@ fn mono_item_visibility<'tcx>(
         }
 
         // These are all compiler glue and such, never exported, always hidden.
+        // When hot-cold-split is enabled, use Default visibility so ThinLTO
+        // can import these items across modules (needed when hot code at O3
+        // references items in Oz-compiled dependency CGUs).
         InstanceKind::VTableShim(..)
         | InstanceKind::ReifyShim(..)
         | InstanceKind::FnPtrShim(..)
@@ -903,7 +906,12 @@ fn mono_item_visibility<'tcx>(
         | InstanceKind::ConstructCoroutineInClosureShim { .. }
         | InstanceKind::DropGlue(..)
         | InstanceKind::CloneShim(..)
-        | InstanceKind::FnPtrAddrShim(..) => return Visibility::Hidden,
+        | InstanceKind::FnPtrAddrShim(..) => {
+            if hot_cold_split {
+                return Visibility::Default;
+            }
+            return Visibility::Hidden;
+        }
     };
 
     // Both the `start_fn` lang item and `main` itself should not be exported,
@@ -936,6 +944,11 @@ fn mono_item_visibility<'tcx>(
             // it available to downstream crates.
             *can_be_internalized = false;
             default_visibility(tcx, def_id, true)
+        } else if hot_cold_split {
+            // Hot-cold-split: default visibility lets ThinLTO import
+            // upstream monomorphizations across Oz/O3 CGU boundaries.
+            *can_be_internalized = false;
+            Visibility::Default
         } else {
             Visibility::Hidden
         };
@@ -946,7 +959,13 @@ fn mono_item_visibility<'tcx>(
             || (can_export_generics && tcx.codegen_fn_attrs(def_id).inline == InlineAttr::Never)
         {
             if tcx.is_unreachable_local_definition(def_id) {
-                Visibility::Hidden
+                if hot_cold_split {
+                    // Hot-cold-split: default visibility for ThinLTO import.
+                    *can_be_internalized = false;
+                    Visibility::Default
+                } else {
+                    Visibility::Hidden
+                }
             } else {
                 // This instance might be useful in a downstream crate.
                 *can_be_internalized = false;
@@ -955,7 +974,12 @@ fn mono_item_visibility<'tcx>(
         } else {
             // We are not exporting generics or the definition is not reachable
             // for downstream crates, we can internalize its instantiations.
-            Visibility::Hidden
+            if hot_cold_split {
+                *can_be_internalized = false;
+                Visibility::Default
+            } else {
+                Visibility::Hidden
+            }
         }
     } else {
         // If this isn't a generic function then we mark this a `Default` if
@@ -1014,7 +1038,12 @@ fn mono_item_visibility<'tcx>(
             *can_be_internalized = false;
         }
 
-        Visibility::Hidden
+        if hot_cold_split {
+            *can_be_internalized = false;
+            Visibility::Default
+        } else {
+            Visibility::Hidden
+        }
     }
 }
 
