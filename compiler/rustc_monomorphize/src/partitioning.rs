@@ -239,9 +239,9 @@ where
                     }
                 }
 
-                eprintln!("DEBUG hot-cold-split: {} original CGUs -> {} split CGUs, hot_funcs={}", original_count, split_cgus.len(), hot_funcs.len());
+                tcx.dcx().note(format!("hot-cold-split: {} OG CGUs -> {} SPLIT CGUs, hot={}", original_count, split_cgus.len(), hot_funcs.len()));
                 for cgu in &split_cgus {
-                    eprintln!("DEBUG CGU: name={} items={} opt={:?}", cgu.name(), cgu.items().len(), cgu.opt_level());
+                    tcx.dcx().note(format!("  CGU name={} items={} opt={:?} primary={}", cgu.name(), cgu.items().len(), cgu.opt_level(), cgu.is_primary()));
                 }
 
                 split_cgus.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
