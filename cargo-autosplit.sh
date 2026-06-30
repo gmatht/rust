@@ -202,13 +202,6 @@ rm -rf "$REL_DIR"
 # Phase 2 — Final build with PGO use + hot/cold CGU splitting
 # ============================================================
 echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO + hot-cold-split) ===" >&2
-# De-prioritize dependencies at Oz to reduce binary size.
-# The -C opt-level=3 is NOT in RUSTFLAGS (which would override all packages).
-# Instead: global release opt-level is "z", prime-finder gets opt-level=3.
-# Dependencies (clap, num-bigint, etc.) compile at Oz, hot code stays at O3.
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata $HOT_COLD_FLAGS" \
-  cargo "$@" \
-  --config 'profile.release.opt-level="z"' \
-  --config 'profile.release.package."prime-finder".opt-level=3'
+RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
 
 echo "=== [cargo-autosplit] Done ===" >&2
