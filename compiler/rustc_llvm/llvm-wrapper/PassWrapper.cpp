@@ -5,7 +5,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/Lint.h"
-#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #if LLVM_VERSION_GE(22, 0)
 #include "llvm/Analysis/RuntimeLibcallInfo.h"
@@ -49,11 +48,6 @@
 #include "llvm/Transforms/Instrumentation/RealtimeSanitizer.h"
 #include "llvm/Transforms/Instrumentation/ThreadSanitizer.h"
 #include "llvm/Transforms/Scalar/AnnotationRemarks.h"
-#if LLVM_VERSION_GE(22, 0)
-#include "llvm/Transforms/IPO/HotColdSplitting.h"
-#else
-#include "llvm/Transforms/Scalar/HotColdSplitting.h"
-#endif
 #include "llvm/Transforms/Utils/CanonicalizeAliases.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
 #include "llvm/Transforms/Utils/NameAnonGlobals.h"
@@ -753,33 +747,6 @@ extern "C" LLVMRustResult LLVMRustOptimize(
             }
           };
           MPM.addPass(MarkHotColdFromName());
-        });
-  }
-
-  // When -Z hot-cold-split is enabled with PGO, mark cold functions with
-  // minsize attribute so LLVM produces smaller code for cold regions.
-  if (HotColdSplit && OptLevel == OptimizationLevel::O3) {
-    PipelineStartEPCallbacks.push_back(
-        [](ModulePassManager &MPM, OptimizationLevel Level) {
-          struct MarkColdWithMinSize
-              : public PassInfoMixin<MarkColdWithMinSize> {
-            PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
-              bool Changed = false;
-              auto &PSI = AM.getResult<ProfileSummaryAnalysis>(M);
-              for (Function &F : M) {
-                if (F.isDeclaration())
-                  continue;
-                if (PSI.isFunctionEntryCold(&F) ||
-                    F.hasFnAttribute(Attribute::Cold)) {
-                  F.addFnAttr(Attribute::MinSize);
-                  Changed = true;
-                }
-              }
-              return Changed ? PreservedAnalyses::none()
-                             : PreservedAnalyses::all();
-            }
-          };
-          MPM.addPass(MarkColdWithMinSize());
         });
   }
 
