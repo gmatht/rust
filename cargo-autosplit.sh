@@ -135,12 +135,11 @@ echo "  Found $NUM_HOT hot functions (threshold >1% of max)" >&2
 
 rm -f "$REL_DIR/.cargo-lock" "$REL_DIR/.cargo-ok" 2>/dev/null || true
 
-# Phase 2 — rebuild with PGO profile-use + per-CGU opt-level.
-# The compiler sets per-CGU opt-levels based on the hot function list:
-# hot CGUs get O3 (.o3 suffix), cold CGUs get Oz (.oz suffix).
-# No CGU splitting (avoids CGU overhead and PGO hash mismatches).
-# ThinLTO post-link reads the .o3/.oz suffix to apply correct opt-level.
-echo "=== [cargo-autosplit] Phase 2 — build (hot=O3, cold=Oz) ===" >&2
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 -Z hot-cold-split -Z hot-function-list=$PGO_DIR/hot_functions.txt" cargo "$@"
+# Phase 2 — rebuild with PGO profile-use + O3.
+# No CGU splitting (caused PGO hash mismatches and 238K CGU overhead).
+# PGO profile-use tells LLVM which functions are hot/cold, guiding optimization.
+# Hot functions get full O3 optimization; cold functions get less aggressive inlining.
+echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO) ===" >&2
+RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3" cargo "$@"
 
 echo "=== [cargo-autosplit] Done ===" >&2
