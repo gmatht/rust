@@ -113,7 +113,6 @@ use rustc_middle::mono::{
     CodegenUnit, CodegenUnitNameBuilder, InstantiationMode, MonoItem, MonoItemData,
     MonoItemPartitions, Visibility,
 };
-use rustc_session::config::OptLevel;
 use rustc_middle::ty::print::{characteristic_def_id_of_type, with_no_trimmed_paths};
 use rustc_middle::ty::{self, InstanceKind, TyCtxt};
 use rustc_middle::util::Providers;
@@ -172,93 +171,13 @@ where
         debug_dump(tcx, "MERGE", &codegen_units);
     }
 
-    // Hot/cold split: when -Z hot-cold-split is enabled with PGO profile-use,
-    // we implement the split at the CGU level by reading the hot function list.
-    // CGUs containing only hot functions get O3; CGUs containing only cold
-    // functions get Oz; mixed CGUs are split into separate hot and cold CGUs.
-    if tcx.sess.opts.unstable_opts.hot_cold_split {
-        if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
-            let hot_funcs = read_hot_function_list(hot_func_path);
-            if !hot_funcs.is_empty() {
-                let mut split_cgus: Vec<CodegenUnit<'tcx>> = Vec::new();
-                for cgu in codegen_units.drain(..) {
-                    let cgu_name = cgu.name();
-                    let mut hot_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
-                    let mut cold_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
-
-                    for (item, data) in cgu.items().iter() {
-                        let sym_name = item.symbol_name(tcx).name.to_string();
-                        if hot_funcs.contains(&sym_name) {
-                            hot_items.push((*item, *data));
-                        } else {
-                            cold_items.push((*item, *data));
-                        }
-                    }
-
-                    if !hot_items.is_empty() && !cold_items.is_empty() {
-                        // Mixed CGU: split into hot and cold parts
-                        let hot_cgu_name = Symbol::intern(&format!("{}.hot", cgu_name));
-                        let cold_cgu_name = Symbol::intern(&format!("{}.cold", cgu_name));
-
-                        let mut hot_cgu = CodegenUnit::new(hot_cgu_name);
-                        for (item, data) in hot_items {
-                            hot_cgu.items_mut().insert(item, data);
-                        }
-                        hot_cgu.compute_size_estimate();
-                        if cgu.is_primary() { hot_cgu.make_primary(); }
-
-                        let mut cold_cgu = CodegenUnit::new(cold_cgu_name);
-                        for (item, data) in cold_items {
-                            cold_cgu.items_mut().insert(item, data);
-                        }
-                        cold_cgu.compute_size_estimate();
-
-                        split_cgus.push(hot_cgu);
-                        split_cgus.push(cold_cgu);
-                    } else if !hot_items.is_empty() {
-                        // All-hot CGU: add .hot suffix so it gets O3
-                        let hot_cgu_name = Symbol::intern(&format!("{}.hot", cgu_name));
-                        let mut hot_cgu = CodegenUnit::new(hot_cgu_name);
-                        for (item, data) in hot_items {
-                            hot_cgu.items_mut().insert(item, data);
-                        }
-                        hot_cgu.compute_size_estimate();
-                        if cgu.is_primary() { hot_cgu.make_primary(); }
-                        split_cgus.push(hot_cgu);
-                    } else {
-                        // All-cold CGU: add .cold suffix so it gets Oz optimization.
-                        let cold_cgu_name = Symbol::intern(&format!("{}.cold", cgu_name));
-                        let mut cold_cgu = CodegenUnit::new(cold_cgu_name);
-                        for (item, data) in cold_items {
-                            cold_cgu.items_mut().insert(item, data);
-                        }
-                        cold_cgu.compute_size_estimate();
-                        if cgu.is_primary() { cold_cgu.make_primary(); }
-                        split_cgus.push(cold_cgu);
-                    }
-                }
-
-                split_cgus.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
-                codegen_units = split_cgus;
-            }
-        }
-    }
-
-    // Assign per-CGU opt-levels for hot/cold split CGUs.
-    // Hot CGUs get Aggressive (O3) for maximum performance.
-    // Cold CGUs stay at the global O3 (no override) so their IR structure
-    // matches Phase 1 (PGO profiling at O3), avoiding PGO hash mismatches.
-    // Cold function attributes (set by MarkHotColdFromName pass) guide LLVM
-    // to optimize cold functions for size within O3 pre-link.
-    // ThinLTO post-link applies SizeMin (Oz) to .cold CGUs (see lto.rs),
-    // which provides the final size optimization for cold code.
-    if tcx.sess.opts.unstable_opts.hot_cold_split {
-        for cgu in codegen_units.iter_mut() {
-            if cgu.name().as_str().ends_with(".hot") {
-                cgu.set_opt_level(Some(OptLevel::Aggressive));
-            }
-        }
-    }
+    // Hot/cold split via per-package opt-level + PGO, not CGU splitting.
+    // Splitting CGUs causes PGO hash mismatches (IR changes from different
+    // CGU structure + internalization decisions) and adds ~238K object overhead
+    // from extra CGUs. Instead, we use per-package opt-level via cargo config:
+    // dependencies at Oz, main crate at O3. PGO profile-use data (handled by
+    // LLVM's built-in hot/cold classification) guides optimization within the
+    // O3 pipeline, with cold functions getting less aggressive inlining.
 
     // Make as many symbols "internal" as possible, so LLVM has more freedom to
     // optimize.

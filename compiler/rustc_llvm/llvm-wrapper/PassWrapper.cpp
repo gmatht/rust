@@ -712,43 +712,14 @@ extern "C" LLVMRustResult LLVMRustOptimize(
         });
   }
 
-  // When -Z hot-cold-split is enabled, set Hot/MinSize/Cold attributes
-  // based on the CGU name suffix (.hot or .cold).
-  // NOTE: This runs at PipelineStartEP, which fires before PGO annotation
-  // passes in LLVM's new PM. Adding function attributes here changes the
-  // function's IR *before* the PGO hash is fetched for matching, causing
-  // PGO hash mismatches. So we add these attributes AFTER the optimization
-  // pipeline by using a custom Module pass scheduled after PGO annotation.
-  if (HotColdSplit) {
-    // Instead of PipelineStartEP, use OptimizerLastEP callback to add
-    // attributes after PGO annotation has completed.
-    OptimizerLastEPCallbacks.push_back(
-        [](ModulePassManager &MPM, OptimizationLevel Level,
-           ThinOrFullLTOPhase) {
-          struct MarkHotColdFromName
-              : public PassInfoMixin<MarkHotColdFromName> {
-            PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
-              StringRef Name = M.getName();
-              bool Changed = false;
-              for (Function &F : M) {
-                if (F.isDeclaration())
-                  continue;
-                if (Name.contains(".hot")) {
-                  F.addFnAttr(Attribute::Hot);
-                  Changed = true;
-                } else if (Name.contains(".cold")) {
-                  F.addFnAttr(Attribute::MinSize);
-                  F.addFnAttr(Attribute::Cold);
-                  Changed = true;
-                }
-              }
-              return Changed ? PreservedAnalyses::none()
-                             : PreservedAnalyses::all();
-            }
-          };
-          MPM.addPass(MarkHotColdFromName());
-        });
-  }
+  // Hot/cold function classification is now handled entirely by LLVM's
+  // PGO profile-use (passed via -C profile-use). PGO automatically marks
+  // high-count functions as hot and low-count functions as cold, which
+  // guides inlining and layout decisions within the O3 pipeline.
+  // The old MarkHotColdFromName pass (which checked CGU names for .hot/.cold)
+  // is removed because CGU-level splitting is eliminated (it caused PGO hash
+  // mismatches and 238K CGU object overhead).
+  (void)HotColdSplit; // suppress unused-variable warning
 
   if (SanitizerOptions) {
     if (SanitizerOptions->SanitizeDataFlow) {
