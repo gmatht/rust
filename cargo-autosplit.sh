@@ -208,7 +208,10 @@ rm -rf "$REL_DIR"
 # ============================================================
 # Phase 2 — Final build with PGO use + hot/cold CGU splitting
 # ============================================================
-echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO + hot-cold-split) ===" >&2
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
+echo "=== [cargo-autosplit] Phase 2 — build (O3 + hot-cold-split, no PGO) ===" >&2
+# PGO adds ~237K profile metadata even at Oz. Since hot/cold split + PGO profile
+# guidance from Phase 0 already identifies hot functions, we skip -C profile-use
+# to minimize binary size. Hot CGUs still get O3, cold CGUs get Oz.
+RUSTFLAGS="-C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
 
 echo "=== [cargo-autosplit] Done ===" >&2
