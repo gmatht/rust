@@ -176,24 +176,27 @@ where
     // opt-level based on the hot function list, stored in a side channel
     // for ThinLTO post-link use (lto.rs::run_pass_manager).
     //
+    // IMPORTANT: We do NOT split CGUs — mixed CGUs (containing both hot
+    // and cold items) stay as one module to avoid increasing the number
+    // of object files (each .rcgu.o has ELF header/symbol-table overhead).
+    // PGO profile-use in Phase 2 provides function-level hot/cold annotation
+    // to LLVM's optimizer, which makes per-function decisions within the
+    // module.
+    //
     // Cold-only CGUs get SizeMin pre-link (smaller base IR via
     // cgu.set_opt_level) and SizeMin post-link (via the side channel).
-    // Hot-only CGUs stay at O3 (default) and get Aggressive post-link.
-    //
-    // Mixed CGUs (containing both hot and cold items) are SPLIT into
-    // a hot CGU (stays at O3) and a cold CGU (gets SizeMin).  Splitting
-    // adds ~20K of ELF object-file overhead per split, but ensures cold
-    // functions are compiled at SizeMin rather than O3 — saving far more
-    // than the overhead cost.
+    // Mixed CGUs stay at O3 pre-link (for PGO hash matching between
+    // Phase 1 and Phase 2) and O3 post-link (via the side channel).
+    // Hot-only CGUs stay at O3 (default).
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
             let hot_funcs = read_hot_function_list(hot_func_path);
             let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
 
-            // First pass: classify each CGU as hot-only, cold-only, or mixed
-            let classifications: Vec<(bool, bool)> = codegen_units.iter().map(|cgu| {
+            for cgu in codegen_units.iter_mut() {
                 let mut any_hot = false;
                 let mut any_cold = false;
+
                 for (item, _data) in cgu.items().iter() {
                     let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
                     let crate_prefixed = format!("{}::{}", crate_name, item_name);
@@ -203,56 +206,14 @@ where
                         any_cold = true;
                     }
                 }
-                (any_hot, any_cold)
-            }).collect();
 
-            // Second pass: apply opt-levels and split mixed CGUs
-            let mut rebuilt = Vec::with_capacity(codegen_units.len());
-            for (mut cgu, (any_hot, any_cold)) in
-                codegen_units.drain(..).zip(classifications)
-            {
                 if any_cold && !any_hot {
-                    // Cold-only CGU: set SizeMin pre-link and post-link
                     cgu.set_opt_level(Some(OptLevel::SizeMin));
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
-                    rebuilt.push(cgu);
-                } else if any_hot && any_cold {
-                    // Mixed CGU: split into hot (O3) and cold (Oz) parts
-                    let cold_name = Symbol::intern(&format!("{}.oz", cgu.name().as_str()));
-                    let mut cold_cgu = CodegenUnit::new_with_opt_level(
-                        cold_name,
-                        Some(OptLevel::SizeMin),
-                    );
-                    let items = std::mem::take(cgu.items_mut());
-                    for (item, data) in items {
-                        let item_name =
-                            with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
-                        let crate_prefixed = format!("{}::{}", crate_name, item_name);
-                        if hot_funcs.contains(&item_name)
-                            || hot_funcs.contains(&crate_prefixed)
-                        {
-                            cgu.items_mut().insert(item, data);
-                        } else {
-                            cold_cgu.items_mut().insert(item, data);
-                        }
-                    }
-                    cgu.set_opt_level(Some(OptLevel::Aggressive));
-                    cgu.compute_size_estimate();
-                    cold_cgu.compute_size_estimate();
-                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
-                    set_per_cgu_opt_level(cold_name.as_str(), OptLevel::SizeMin);
-                    rebuilt.push(cgu);
-                    rebuilt.push(cold_cgu);
                 } else if any_hot {
-                    // Hot-only CGU: stays at O3, set side-channel post-link
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
-                    rebuilt.push(cgu);
-                } else {
-                    // Neither hot nor cold (empty CGU): keep as-is
-                    rebuilt.push(cgu);
                 }
             }
-            codegen_units = rebuilt;
         }
     }
 
