@@ -60,7 +60,7 @@ unset CARGO_PROFILE_RELEASE_LTO
 # Match the sysroot std build settings: single CGU per crate prevents
 # the ~67K bloat from cargo's default 16-CGU partitioning.
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
-export CARGO_PROFILE_RELEASE_LTO=thin
+export CARGO_PROFILE_RELEASE_LTO=fat
 
 # With --target, cargo stores artifacts under target/<target>/release/
 # Note: -Z build-std goes BEFORE the subcommand (cargo global flag),
