@@ -152,25 +152,11 @@ where
 
     let cx = &PartitioningCx { tcx, usage_map };
 
-    // Load hot function list before placement so CGUs can be named
-    // separately (hot items get a ".hot" CGU suffix, keeping them
-    // naturally separated from cold items without a post-hoc split).
-    let hot_funcs: Option<(FxHashSet<String>, Symbol)> =
-        if tcx.sess.opts.unstable_opts.hot_cold_split {
-            tcx.sess.opts.unstable_opts.hot_function_list.as_ref().map(|path| {
-                let funcs = read_hot_function_list(path);
-                let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
-                (funcs, crate_name)
-            })
-        } else {
-            None
-        };
-
     // Place all mono items into a codegen unit. `place_mono_items` is
     // responsible for initializing the CGU size estimates.
     let PlacedMonoItems { mut codegen_units, internalization_candidates } = {
         let _prof_timer = tcx.prof.generic_activity("cgu_partitioning_place_items");
-        let placed = place_mono_items(cx, mono_items, hot_funcs.as_ref());
+        let placed = place_mono_items(cx, mono_items);
 
         debug_dump(tcx, "PLACE", &placed.codegen_units);
 
@@ -190,38 +176,50 @@ where
     // opt-level based on the hot function list, stored in a side channel
     // for ThinLTO post-link use (lto.rs::run_pass_manager).
     //
-    // Hot items were placed in ".hot"-suffixed CGUs during
-    // place_mono_items, so CGUs are already pure-hot or pure-cold.
-    // This block assigns the per-CGU opt-level; no CGU splitting is
-    // needed.
+    // IMPORTANT: We do NOT split CGUs — mixed CGUs (containing both hot
+    // and cold items) stay as one module to avoid increasing the number
+    // of object files (each .rcgu.o has ELF header/symbol-table overhead).
+    // PGO profile-use in Phase 2 provides function-level hot/cold annotation
+    // to LLVM's optimizer, which makes per-function decisions within the
+    // module.
     //
     // Cold-only CGUs get SizeMin pre-link (smaller base IR via
     // cgu.set_opt_level) and SizeMin post-link (via the side channel).
-    // Hot-only CGUs get Aggressive (O3) post-link via the side channel.
-    if let Some((ref hot_funcs, ref crate_name)) = hot_funcs {
-        for cgu in codegen_units.iter_mut() {
-            let mut hot_count = 0usize;
-            let mut cold_count = 0usize;
+    // Mixed CGUs stay at the global opt-level pre-link (for PGO hash
+    // matching between Phase 1 and Phase 2) and More (O2) post-link
+    // (via the side channel).  O2 provides a good balance of speed and
+    // code size for hot functions — nearly as fast as O3 but with
+    // less code bloat from excessive inlining and loop unrolling.
+    // Hot-only CGUs get More (O2) post-link via the side channel.
+    if tcx.sess.opts.unstable_opts.hot_cold_split {
+        if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
+            let hot_funcs = read_hot_function_list(hot_func_path);
+            let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
 
-            for (item, _data) in cgu.items().iter() {
-                let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
-                let crate_prefixed = format!("{}::{}", crate_name, item_name);
-                let sym_name = item.symbol_name(tcx).name;
-                if hot_funcs.contains(&item_name)
-                    || hot_funcs.contains(&crate_prefixed)
-                    || hot_funcs.contains(sym_name)
-                {
-                    hot_count += 1;
-                } else {
-                    cold_count += 1;
+            for cgu in codegen_units.iter_mut() {
+                let mut any_hot = false;
+                let mut any_cold = false;
+
+                for (item, _data) in cgu.items().iter() {
+                    let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
+                    let crate_prefixed = format!("{}::{}", crate_name, item_name);
+                    let sym_name = item.symbol_name(tcx).name;
+                    if hot_funcs.contains(&item_name)
+                        || hot_funcs.contains(&crate_prefixed)
+                        || hot_funcs.contains(sym_name)
+                    {
+                        any_hot = true;
+                    } else {
+                        any_cold = true;
+                    }
                 }
-            }
 
-            if cold_count > 0 && hot_count == 0 {
-                cgu.set_opt_level(Some(OptLevel::SizeMin));
-                set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
-            } else if hot_count > 0 {
-                set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
+                if any_cold && !any_hot {
+                    cgu.set_opt_level(Some(OptLevel::SizeMin));
+                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
+                } else if any_hot {
+                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
+                }
             }
         }
     }
@@ -252,11 +250,7 @@ where
     codegen_units
 }
 
-fn place_mono_items<'tcx, I>(
-    cx: &PartitioningCx<'_, 'tcx>,
-    mono_items: I,
-    hot_funcs: Option<&(FxHashSet<String>, Symbol)>,
-) -> PlacedMonoItems<'tcx>
+fn place_mono_items<'tcx, I>(cx: &PartitioningCx<'_, 'tcx>, mono_items: I) -> PlacedMonoItems<'tcx>
 where
     I: Iterator<Item = MonoItem<'tcx>>,
 {
@@ -296,25 +290,6 @@ where
                 cgu_name_cache,
             ),
             None => fallback_cgu_name(cgu_name_builder),
-        };
-
-        // Hot items get a distinct CGU name (".hot" suffix) so they
-        // are placed in a separate CGU from cold items.  This avoids
-        // mixed CGUs and the need for a post-hoc split.
-        let cgu_name = if let Some(&(ref funcs, ref crate_name)) = hot_funcs {
-            let item_name = with_no_trimmed_paths!(cx.tcx.def_path_str(mono_item.def_id()));
-            let crate_prefixed = format!("{}::{}", crate_name, item_name);
-            let sym_name = mono_item.symbol_name(cx.tcx).name;
-            let is_hot = funcs.contains(&item_name)
-                || funcs.contains(&crate_prefixed)
-                || funcs.contains(sym_name);
-            if is_hot {
-                Symbol::intern(&format!("{}.hot", cgu_name))
-            } else {
-                cgu_name
-            }
-        } else {
-            cgu_name
         };
 
         let cgu = codegen_units.entry(cgu_name).or_insert_with(|| CodegenUnit::new(cgu_name));
@@ -426,10 +401,7 @@ fn merge_codegen_units<'tcx>(
         let cgu_dst = &codegen_units[max_codegen_units - 1];
 
         // Find the CGU that overlaps the most with `cgu_dst`. In the case of a
-        // tie, favour the earlier (bigger) CGU.  Skip pairs where one CGU
-        // is a hot-split CGU (name contains ".hot") and the other is not,
-        // to prevent hot and cold items from being merged back together.
-        let cgu_dst_is_hot = cgu_dst.name().as_str().contains(".hot");
+        // tie, favour the earlier (bigger) CGU.
         let mut max_overlap = 0;
         let mut max_overlap_i = max_codegen_units;
         for (i, cgu_src) in codegen_units.iter().enumerate().skip(max_codegen_units) {
@@ -437,12 +409,6 @@ fn merge_codegen_units<'tcx>(
                 // None of the remaining overlaps can exceed `max_overlap`, so
                 // stop looking.
                 break;
-            }
-
-            let cgu_src_is_hot = cgu_src.name().as_str().contains(".hot");
-            if cgu_dst_is_hot != cgu_src_is_hot {
-                // Don't merge hot and cold CGUs.
-                continue;
             }
 
             let overlap = compute_inlined_overlap(cgu_dst, cgu_src);
@@ -453,14 +419,6 @@ fn merge_codegen_units<'tcx>(
         }
 
         let mut cgu_src = codegen_units.swap_remove(max_overlap_i);
-        if max_overlap_i == max_codegen_units {
-            // No compatible merge partner found (e.g. the only remaining
-            // CGUs are a hot-split CGU and a cold CGU).  Allow them to
-            // coexist beyond the target count rather than force-merging
-            // and undoing the hot/cold separation.
-            codegen_units.push(cgu_src);
-            break;
-        }
         let cgu_dst = &mut codegen_units[max_codegen_units - 1];
 
         // Move the items from `cgu_src` to `cgu_dst`. Some of them may be
