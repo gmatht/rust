@@ -194,6 +194,7 @@ where
 
             let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
             eprintln!("HOTCOLD: processing {} CGUs for crate {}", codegen_units.len(), crate_name);
+            eprintln!("HOTCOLD:   hot functions: {} entries", hot_funcs.len());
 
             for cgu in codegen_units.iter_mut() {
                 let mut any_hot = false;
@@ -202,7 +203,7 @@ where
                 for (item, _data) in cgu.items().iter() {
                     let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
                     let is_hot = hot_funcs.contains(&item_name);
-                    eprintln!("HOTCOLD:   ITEM in {}: hot={} name=|{}|", cgu.name(), is_hot, item_name);
+                    eprintln!("HOTCOLD:   ITEM cgu={} hot={} name=|{}|", cgu.name(), is_hot, item_name);
                     if is_hot {
                         any_hot = true;
                     } else {
