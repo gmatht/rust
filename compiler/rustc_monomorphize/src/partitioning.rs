@@ -214,7 +214,7 @@ where
                     cgu.set_opt_level(Some(OptLevel::SizeMin));
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
                 } else if any_hot {
-                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
+                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::More);
                 }
             }
         }
