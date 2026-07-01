@@ -165,9 +165,12 @@ END {
 
 NUM_HOT=$(wc -l < "$PGO_DIR/hot_functions.txt")
 echo "  Found $NUM_HOT hot functions (threshold >1% of max)" >&2
-if [ "$NUM_HOT" -gt 0 ] && [ "$NUM_HOT" -lt 20 ]; then
-    echo "  Hot functions:" >&2
-    sed 's/^/    /' "$PGO_DIR/hot_functions.txt" >&2
+if [ "$NUM_HOT" -gt 0 ]; then
+    echo "  Hot functions ($NUM_HOT):" >&2
+    head -5 "$PGO_DIR/hot_functions.txt" | cat -v >&2
+    if [ "$NUM_HOT" -gt 5 ]; then
+        echo "  ... and $((NUM_HOT - 5)) more" >&2
+    fi
 fi
 
 rm -f "$REL_DIR/.cargo-lock" "$REL_DIR/.cargo-ok" 2>/dev/null || true
