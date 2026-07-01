@@ -617,12 +617,8 @@ pub(crate) fn run_pass_manager(
     // the bare CGU name.
     let cgu_name = module.name.strip_suffix(".rcgu.o").unwrap_or(&module.name);
     let post_link_opt = if cgcx.hot_cold_split {
-        let side_channel = rustc_session::config::get_per_cgu_opt_level(cgu_name);
-        eprintln!("HOTCOLD_LTO: module={} cgu_name={} side_channel={} opt={:?}",
-            module.name, cgu_name,
-            side_channel.map(|_| "found").unwrap_or("not found"),
-            side_channel.unwrap_or(config.opt_level.unwrap_or(config::OptLevel::Aggressive)));
-        side_channel.unwrap_or(config.opt_level.unwrap_or(config::OptLevel::Aggressive))
+        rustc_session::config::get_per_cgu_opt_level(cgu_name)
+            .unwrap_or(config.opt_level.unwrap_or(config::OptLevel::Aggressive))
     } else {
         config.opt_level.unwrap_or(config::OptLevel::No)
     };
