@@ -2404,6 +2404,8 @@ options! {
         "CPU time percentage threshold for classifying functions as hot (default: 90)"),
     hot_function_list: Option<PathBuf> = (None, parse_opt_pathbuf, [UNTRACKED],
         "path to a file listing function symbols to treat as hot"),
+    pgo_hot_inline: bool = (false, parse_bool, [UNTRACKED],
+        "force cross-crate MIR inlining of functions listed in hot_function_list"),
     human_readable_cgu_names: bool = (false, parse_bool, [TRACKED],
         "generate human-readable, predictable names for codegen units (default: no)"),
     identify_regions: bool = (false, parse_bool, [UNTRACKED],

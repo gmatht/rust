@@ -218,7 +218,7 @@ cargo clean 2>/dev/null || true
 # Phase 2 — Final build with PGO use + hot/cold CGU splitting
 # ============================================================
 echo "=== [cargo-autosplit-buildstd] Phase 2 — build (PGO use + hot-cold-split) ===" >&2
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo $BUILD_STD_GLOBAL "$@" --target "$HOST_TARGET"
+RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 -Z pgo-hot-inline $HOT_COLD_FLAGS" cargo $BUILD_STD_GLOBAL "$@" --target "$HOST_TARGET"
 
 # Aggressively strip the output binary
 STRIP_BIN=""
