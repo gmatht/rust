@@ -594,22 +594,20 @@ pub(crate) fn run_pass_manager(
     // Per-CGU opt-level is NOT applied during pre-link codegen (to keep PGO
     // hashes matching between Phase 1 and Phase 2). Instead, it is applied
     // during ThinLTO post-link only.
-    // When no per-CGU opt-level is found (or hot-cold-split is disabled), use
-    // the global configured opt-level for all modules.
-    // Post-link opt-level: read from the PER_CGU_OPT_LEVEL side channel set
-    // during partitioning (rustc_session::config::set_per_cgu_opt_level).
+    //
     // The side channel is process-local — it only contains CGU entries for
     // the crate currently being compiled.  Dependency-crate CGUs compiled
     // in separate rustc invocations had their own side channels that are now
     // gone.
     //
-    // When no per-CGU opt-level is found (dependency CGUs), fall back to the
-    // global configured opt-level (O3) instead of SizeMin.  Dependency CGUs
-    // were compiled at O3 during pre-link (without -Z hot-cold-split affecting
-    // their partitioning) and may contain hot utility functions used by the
-    // benchmark.  Applying SizeMin to them would unduly slow down those hot
-    // functions.  The global O3 matches the manual-split baseline behavior
-    // (Oz for binary crate, O3 for library crate).
+    // When no per-CGU opt-level is found (dependency CGUs), fall back to
+    // SizeMin.  Dependency CGUs were partitioned with the same hot-function
+    // list and since no hot functions match dependency crate prefixes, all
+    // dependency CGUs are classified as cold-only, getting SizeMin pre-link.
+    // Using SizeMin post-link for the fallback keeps them at SizeMin overall,
+    // matching the manual-split baseline where dependency crates get the
+    // binary's Oz profile.  Previously the fallback was Aggressive (O3),
+    // which inflated the binary by ~42K (or more) from cold dependency code.
     //
     // Strip the .rcgu.o suffix from module names so that the side-channel
     // lookup (keyed by bare CGU name) succeeds.  ThinLTO module names carry
@@ -618,7 +616,7 @@ pub(crate) fn run_pass_manager(
     let cgu_name = module.name.strip_suffix(".rcgu.o").unwrap_or(&module.name);
     let post_link_opt = if cgcx.hot_cold_split {
         rustc_session::config::get_per_cgu_opt_level(cgu_name)
-            .unwrap_or(config.opt_level.unwrap_or(config::OptLevel::Aggressive))
+            .unwrap_or(config::OptLevel::SizeMin)
     } else {
         config.opt_level.unwrap_or(config::OptLevel::No)
     };
