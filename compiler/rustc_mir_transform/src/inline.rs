@@ -320,7 +320,17 @@ impl<'tcx> NormalInliner<'tcx> {
         );
         let crate_name = tcx.crate_name(def_id.krate);
         let crate_prefixed = format!("{}::{}", crate_name, callee_name);
-        funcs.contains(&callee_name) || funcs.contains(&crate_prefixed)
+        if funcs.contains(&callee_name) || funcs.contains(&crate_prefixed) {
+            return true;
+        }
+        // PGO profiles format inherent impl methods as `<Type>::method` but
+        // def_path_str produces `Type::method`. Check both forms.
+        if let Some(angle) = angle_bracket_form(&callee_name) {
+            if funcs.contains(&angle) || funcs.contains(&format!("{}::{}", crate_name, angle)) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -1494,4 +1504,18 @@ fn read_hot_function_list(path: &Path) -> FxHashSet<String> {
             }
         })
         .collect()
+}
+
+/// Convert `Type::method` to `<Type>::method` for matching PGO profile output.
+fn angle_bracket_form(name: &str) -> Option<String> {
+    if let Some(pos) = name.rfind("::") {
+        let (ty, method) = name.split_at(pos);
+        if !ty.starts_with('<') {
+            Some(format!("<{}>{}", ty, method))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
