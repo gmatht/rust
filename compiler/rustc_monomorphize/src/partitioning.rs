@@ -201,8 +201,9 @@ where
 
                 for (item, _data) in cgu.items().iter() {
                     let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
-                    if hot_funcs.contains(&item_name) {
-                        eprintln!("HOTCOLD:   HOT item in {}: {}", cgu.name(), item_name);
+                    let is_hot = hot_funcs.contains(&item_name);
+                    eprintln!("HOTCOLD:   ITEM in {}: hot={} name=|{}|", cgu.name(), is_hot, item_name);
+                    if is_hot {
                         any_hot = true;
                     } else {
                         any_cold = true;

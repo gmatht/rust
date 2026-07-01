@@ -168,6 +168,7 @@ END {
     }
 }
 ' | $CXXFILT 2>/dev/null | sort -u > "$PGO_DIR/hot_functions.txt"
+cp "$PGO_DIR/hot_functions.txt" /tmp/debug_hot_functions.txt 2>/dev/null || true
 
 NUM_HOT=$(wc -l < "$PGO_DIR/hot_functions.txt")
 echo "  Found $NUM_HOT hot functions (threshold >1% of max)" >&2
