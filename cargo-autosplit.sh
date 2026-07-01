@@ -80,6 +80,12 @@ RUSTFLAGS="-C profile-generate=$PGO_DIR -C opt-level=3" cargo "$@"
 # Run every built executable to collect Phase-0 profiles
 REL_DIR="${CARGO_TARGET_DIR:-target}/release"
 echo "=== [cargo-autosplit] Collecting Phase-0 profiles ===" >&2
+# Remove build-script PGO profiles (generated during cargo build) so they don't
+# contaminate the hot-function extraction. Only the binary's own profile data
+# should be used to determine which functions are hot.
+for f in "$PGO_DIR"/default_*.profraw; do
+    [ -f "$f" ] && rm -f "$f"
+done
 for f in "$REL_DIR"/*; do
     if [ -f "$f" ] && [ -x "$f" ] && ! [ -d "$f" ]; then
         if file "$f" 2>/dev/null | grep -q 'ELF.*executable'; then
