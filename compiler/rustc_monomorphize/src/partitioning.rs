@@ -212,6 +212,9 @@ where
             let mut split_cgus: Vec<CodegenUnit<'tcx>> = Vec::new();
             let mut cgu_names_to_remove: Vec<Symbol> = Vec::new();
 
+            let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
+            eprintln!("HOTCOLD: processing {} CGUs for crate {}", codegen_units.len(), crate_name);
+
             for cgu in codegen_units.iter_mut() {
                 let mut hot_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
                 let mut cold_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
@@ -222,11 +225,14 @@ where
                     // pipeline (llvm-profdata → llvm-cxxfilt).
                     let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
                     if hot_funcs.contains(&item_name) {
+                        eprintln!("HOTCOLD:   HOT item in {}: {}", cgu.name(), item_name);
                         hot_items.push((*item, *data));
                     } else {
                         cold_items.push((*item, *data));
                     }
                 }
+
+                eprintln!("HOTCOLD:   CGU {}: {} hot, {} cold", cgu.name(), hot_items.len(), cold_items.len());
 
                 if hot_items.is_empty() {
                     // All-cold CGU: Oz for both pre-link and post-link
