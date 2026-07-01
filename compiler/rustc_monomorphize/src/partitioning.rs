@@ -246,6 +246,13 @@ where
                 if any_cold && !any_hot {
                     cgu.set_opt_level(Some(OptLevel::SizeMin));
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
+                } else if any_hot && any_cold {
+                    // Mixed CGU: use Size (Os) post-link.  The hot functions
+                    // still get O-level optimization via PGO's function-level
+                    // hot marking, while cold functions are size-optimized.
+                    // Using Aggressive (O3) for mixed CGUs made cold items
+                    // ~50K larger than the all-Oz baseline.
+                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Size);
                 } else if any_hot {
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
                 }
