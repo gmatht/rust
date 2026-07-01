@@ -229,4 +229,14 @@ echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO + hot-cold-split) ===" >
 # optimization after ThinLTO, causing speed regressions.
 RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
 
+# Strip the output binary to remove any remaining non-essential sections
+# (e.g., .note, .comment) that Cargo's profile.release.strip may leave behind.
+for f in "$REL_DIR"/*; do
+    if [ -f "$f" ] && [ -x "$f" ] && ! [ -d "$f" ]; then
+        if file "$f" 2>/dev/null | grep -q 'ELF.*executable'; then
+            strip "$f" 2>/dev/null || true
+        fi
+    fi
+done
+
 echo "=== [cargo-autosplit] Done ===" >&2
