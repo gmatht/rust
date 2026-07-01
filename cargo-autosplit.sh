@@ -222,11 +222,13 @@ cargo clean 2>/dev/null || true
 # ============================================================
 # Phase 2 — Final build with PGO use + hot/cold CGU splitting
 # ============================================================
-echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO + hot-cold-split) ===" >&2
-# PGO profile-use guides LLVM's inlining and layout for hot functions within
-# each module, including dependency crate functions. Without PGO, dependency
-# modules (std, prime-lib, etc.) have no hot/cold annotation and get sub-optimal
-# optimization after ThinLTO, causing speed regressions.
+echo "=== [cargo-autosplit] Phase 2 — build (PGO use + hot-cold-split) ===" >&2
+# PGO profile-use provides function-level hot/cold annotation to LLVM's
+# optimizer, improving performance for hot functions.  The per-CGU opt-level
+# side channel (from partitioning.rs) ensures cold CGUs get SizeMin (Oz)
+# and hot CGUs get More (O2) during ThinLTO post-link, regardless of the
+# global opt-level.  The global opt-level is set to O3 to allow PGO-guided
+# inlining and optimization at the module level.
 RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
 
 # Strip the output binary to remove any remaining non-essential sections
