@@ -610,17 +610,14 @@ pub(crate) fn run_pass_manager(
     // benchmark.  Applying SizeMin to them would unduly slow down those hot
     // functions.  The global O3 matches the manual-split baseline behavior
     // (Oz for binary crate, O3 for library crate).
+    //
+    // Strip the .rcgu.o suffix from module names so that the side-channel
+    // lookup (keyed by bare CGU name) succeeds.  ThinLTO module names carry
+    // the extension added during object-file emission, but partitioning stored
+    // the bare CGU name.
+    let cgu_name = module.name.strip_suffix(".rcgu.o").unwrap_or(&module.name);
     let post_link_opt = if cgcx.hot_cold_split {
-        let side_channel = rustc_session::config::get_per_cgu_opt_level(&module.name);
-        eprintln!("HOTCOLD_LTO: module {} {} {}",
-            module.name,
-            side_channel.map(|_| "has_side_channel").unwrap_or("no_side_channel"),
-            match side_channel.unwrap_or(config.opt_level.unwrap_or(config::OptLevel::Aggressive)) {
-                config::OptLevel::SizeMin => "using SizeMin",
-                config::OptLevel::Aggressive => "using O3",
-                _ => "using OTHER",
-            }
-        );
+        let side_channel = rustc_session::config::get_per_cgu_opt_level(cgu_name);
         side_channel.unwrap_or(config.opt_level.unwrap_or(config::OptLevel::Aggressive))
     } else {
         config.opt_level.unwrap_or(config::OptLevel::No)
