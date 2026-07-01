@@ -172,109 +172,54 @@ where
         debug_dump(tcx, "MERGE", &codegen_units);
     }
 
-    // Hot/cold split: when -Z hot-cold-split is enabled, determine per-CGU
-    // opt-level based on the hot function list and store in a side channel
-    // for ThinLTO post-link use (lto.rs). Mixed CGUs (those containing both
-    // hot and cold items) are split into separate .o3 (hot) and .oz (cold)
-    // CGUs so that cold code benefits from Oz codegen during post-link.
+    // Hot/cold split: when -Z hot-cold-split is enabled, set per-CGU
+    // opt-level based on the hot function list, stored in a side channel
+    // for ThinLTO post-link use (lto.rs::run_pass_manager).
     //
-    // CRITICAL: We do NOT call cgu.set_opt_level() because that changes the
-    // LLVM pre-PGO optimization pipeline for cold CGUs (e.g. skips
-    // CallSiteSplittingPass at SizeMin, uses lower pre-inliner thresholds at
-    // Oz). These pipeline differences change function IR BEFORE
-    // PGOInstrumentationUse runs, causing PGO hash mismatches between Phase 1
-    // (profile-generate, all O3) and Phase 2 (profile-use, mixed O3/Oz).
+    // IMPORTANT: We do NOT split CGUs — mixed CGUs (containing both hot
+    // and cold items) stay as one module to avoid increasing the number
+    // of object files (each .rcgu.o has ELF header/symbol-table overhead).
+    // PGO profile-use in Phase 2 provides function-level hot/cold annotation
+    // to LLVM's optimizer, which makes per-function decisions within the
+    // module.
     //
-    // Instead, all CGUs stay at the global opt-level (O3) for pre-link codegen,
-    // ensuring identical LLVM pre-PGO pipelines between phases. The per-CGU
-    // opt-level is stored via rustc_session::config::set_per_cgu_opt_level and
-    // applied during ThinLTO post-link only (lto.rs::run_pass_manager reads it
-    // via rustc_session::config::get_per_cgu_opt_level).
-    //
-    // Hot/cold split: classify CGUs as hot (O3) or cold (Oz) based on the
-    // hot function list. Mixed CGUs (containing both hot and cold items) are
-    // split into separate .o3 (hot) and .oz (cold) CGUs.
-    //
-    // Unlike the original approach which only set the ThinLTO post-link
-    // opt-level via the side-channel, we ALSO call cgu.set_opt_level() here.
-    // This is safe because the SAME hot-function-list and -Z hot-cold-split
-    // are passed in BOTH Phase 1 (PGO generate) and Phase 2 (PGO use). The
-    // pre-PGO LLVM pipeline (CallSiteSplittingPass, pre-inliner thresholds)
-    // is identical between phases because both phases use the same CGU
-    // structure and opt-level assignments. Therefore, PGO hashes match.
-    //
-    // Cold CGUs get SizeMin during pre-link codegen (smaller base IR),
-    // and hot CGUs stay at the global O3. This way, cold code is genuinely
-    // compiled at Oz from the start, not just post-link-optimized.
+    // Cold-only CGUs get SizeMin pre-link (smaller base IR via
+    // cgu.set_opt_level) and SizeMin post-link (via the side channel).
+    // Mixed CGUs stay at O3 pre-link (for PGO hash matching between
+    // Phase 1 and Phase 2) and O3 post-link (via the side channel).
+    // Hot-only CGUs stay at O3 (default).
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
             let hot_funcs = read_hot_function_list(hot_func_path);
-            let mut split_cgus: Vec<CodegenUnit<'tcx>> = Vec::new();
-            let mut cgu_names_to_remove: Vec<Symbol> = Vec::new();
 
             let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
             eprintln!("HOTCOLD: processing {} CGUs for crate {}", codegen_units.len(), crate_name);
 
             for cgu in codegen_units.iter_mut() {
-                let mut hot_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
-                let mut cold_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
+                let mut any_hot = false;
+                let mut any_cold = false;
 
-                for (item, data) in cgu.items().iter() {
-                    // Match against the Rust path (demangled), which matches
-                    // the demangled names produced by the PGO extraction
-                    // pipeline (llvm-profdata → llvm-cxxfilt).
+                for (item, _data) in cgu.items().iter() {
                     let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
                     if hot_funcs.contains(&item_name) {
                         eprintln!("HOTCOLD:   HOT item in {}: {}", cgu.name(), item_name);
-                        hot_items.push((*item, *data));
+                        any_hot = true;
                     } else {
-                        cold_items.push((*item, *data));
+                        any_cold = true;
                     }
                 }
 
-                eprintln!("HOTCOLD:   CGU {}: {} hot, {} cold", cgu.name(), hot_items.len(), cold_items.len());
+                eprintln!("HOTCOLD:   CGU {}: hot={} cold={}", cgu.name(), any_hot, any_cold);
 
-                if hot_items.is_empty() {
-                    // All-cold CGU: Oz for both pre-link and post-link
+                if any_cold && !any_hot {
+                    // All-cold CGU: Oz pre-link + Oz post-link
                     cgu.set_opt_level(Some(OptLevel::SizeMin));
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
-                } else if cold_items.is_empty() {
-                    // All-hot CGU: O3 (default, no override needed)
+                } else if any_hot {
+                    // Hot or mixed CGU: O3 pre-link (default) + O3 post-link
+                    // PGO handles function-level hot/cold within the module.
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
-                } else {
-                    // Mixed CGU: split into .o3 (hot) and .oz (cold) CGUs
-                    let cgu_name = cgu.name();
-                    let base_name = cgu_name.as_str();
-                    let hot_name = Symbol::intern(&format!("{base_name}.o3"));
-                    let cold_name = Symbol::intern(&format!("{base_name}.oz"));
-
-                    let mut hot_cgu = CodegenUnit::new(hot_name);
-                    for (item, data) in &hot_items {
-                        hot_cgu.items_mut().insert(*item, *data);
-                    }
-                    hot_cgu.compute_size_estimate();
-                    set_per_cgu_opt_level(hot_name.as_str(), OptLevel::Aggressive);
-
-                    let mut cold_cgu = CodegenUnit::new(cold_name);
-                    for (item, data) in &cold_items {
-                        cold_cgu.items_mut().insert(*item, *data);
-                    }
-                    cold_cgu.compute_size_estimate();
-                    cold_cgu.set_opt_level(Some(OptLevel::SizeMin));
-                    set_per_cgu_opt_level(cold_name.as_str(), OptLevel::SizeMin);
-
-                    split_cgus.push(hot_cgu);
-                    split_cgus.push(cold_cgu);
-                    cgu_names_to_remove.push(cgu.name());
                 }
-            }
-
-            // Remove original mixed CGUs and add split ones
-            if !cgu_names_to_remove.is_empty() {
-                codegen_units.retain(|cgu| !cgu_names_to_remove.contains(&cgu.name()));
-                codegen_units.extend(split_cgus);
-                // Re-sort to maintain deterministic ordering
-                codegen_units.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
             }
         }
     }

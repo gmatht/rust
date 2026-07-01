@@ -599,19 +599,20 @@ pub(crate) fn run_pass_manager(
     // Post-link opt-level: read from the PER_CGU_OPT_LEVEL side channel set
     // during partitioning (rustc_session::config::set_per_cgu_opt_level).
     // The side channel is process-local — it only contains CGU entries for
-    // the ROOT crate (the crate currently being compiled).  Dependency-crate
-    // CGUs compiled in separate rustc invocations had their own side channels
-    // that are now gone.
+    // the crate currently being compiled.  Dependency-crate CGUs compiled
+    // in separate rustc invocations had their own side channels that are now
+    // gone.
     //
-    // When no per-CGU opt-level is found (dependency CGUs), fall back to
-    // SizeMin (Oz) instead of the global O3.  This ensures dependency CGUs
-    // (which are all-cold since no dependency function appears in the PGO
-    // hot-function-list) are post-link optimized at Oz, matching their
-    // pre-link opt-level.  Without this fallback, dependency CGUs would be
-    // post-link optimized at O3 (the global level), adding size bloat.
+    // When no per-CGU opt-level is found (dependency CGUs), fall back to the
+    // global configured opt-level (O3) instead of SizeMin.  Dependency CGUs
+    // were compiled at O3 during pre-link (without -Z hot-cold-split affecting
+    // their partitioning) and may contain hot utility functions used by the
+    // benchmark.  Applying SizeMin to them would unduly slow down those hot
+    // functions.  The global O3 matches the manual-split baseline behavior
+    // (Oz for binary crate, O3 for library crate).
     let post_link_opt = if cgcx.hot_cold_split {
         rustc_session::config::get_per_cgu_opt_level(&module.name)
-            .unwrap_or(config::OptLevel::SizeMin)
+            .unwrap_or(config.opt_level.unwrap_or(config::OptLevel::Aggressive))
     } else {
         config.opt_level.unwrap_or(config::OptLevel::No)
     };
