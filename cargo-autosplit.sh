@@ -199,7 +199,7 @@ for f in "$REL_DIR"/*; do
     if [ -f "$f" ] && [ -x "$f" ] && ! [ -d "$f" ]; then
         if file "$f" 2>/dev/null | grep -q 'ELF.*executable'; then
             echo "  running $f ..." >&2
-            "$f" 30 >/dev/null 2>&1 || true
+            "$f" 5 >/dev/null 2>&1 || true
         fi
     fi
 done
