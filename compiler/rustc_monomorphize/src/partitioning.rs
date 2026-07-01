@@ -230,32 +230,60 @@ where
                 if hot_funcs_in_crate { break; }
             }
 
-            for cgu in codegen_units.iter_mut() {
-                let mut any_hot = false;
-                let mut any_cold = false;
+            if !hot_funcs_in_crate { return codegen_units; }
 
-                for (item, _data) in cgu.items().iter() {
+            let mut split_cgus: Vec<CodegenUnit<'tcx>> = Vec::new();
+            let mut cgu_names_to_remove: Vec<Symbol> = Vec::new();
+
+            for cgu in codegen_units.iter_mut() {
+                let mut hot_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
+                let mut cold_items: Vec<(MonoItem<'tcx>, MonoItemData)> = Vec::new();
+
+                for (item, data) in cgu.items().iter() {
                     let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
                     let crate_prefixed = format!("{}::{}", crate_name, item_name);
-                    let is_hot = hot_funcs.contains(&item_name) || hot_funcs.contains(&crate_prefixed);
-                    if is_hot { any_hot = true; } else { any_cold = true; }
+                    if hot_funcs.contains(&item_name) || hot_funcs.contains(&crate_prefixed) {
+                        hot_items.push((*item, *data));
+                    } else {
+                        cold_items.push((*item, *data));
+                    }
                 }
 
-                if !hot_funcs_in_crate { continue; }
-
-                if any_cold && !any_hot {
+                if cold_items.is_empty() {
+                    // All-hot CGU: O3
+                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
+                } else if hot_items.is_empty() {
+                    // All-cold CGU: Oz pre-link + Oz post-link
                     cgu.set_opt_level(Some(OptLevel::SizeMin));
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
-                } else if any_hot && any_cold {
-                    // Mixed CGU: use Size (Os) post-link.  The hot functions
-                    // still get O-level optimization via PGO's function-level
-                    // hot marking, while cold functions are size-optimized.
-                    // Using Aggressive (O3) for mixed CGUs made cold items
-                    // ~50K larger than the all-Oz baseline.
-                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Size);
-                } else if any_hot {
-                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
+                } else {
+                    // Mixed CGU: split into .o3 (hot) and .oz (cold) parts
+                    let cgu_name = cgu.name();
+                    let base_name = cgu_name.as_str();
+                    let hot_name = Symbol::intern(&format!("{base_name}.o3"));
+                    let cold_name = Symbol::intern(&format!("{base_name}.oz"));
+
+                    let mut hot_cgu = CodegenUnit::new(hot_name);
+                    for (item, data) in &hot_items { hot_cgu.items_mut().insert(*item, *data); }
+                    hot_cgu.compute_size_estimate();
+                    set_per_cgu_opt_level(hot_name.as_str(), OptLevel::Aggressive);
+
+                    let mut cold_cgu = CodegenUnit::new(cold_name);
+                    for (item, data) in &cold_items { cold_cgu.items_mut().insert(*item, *data); }
+                    cold_cgu.compute_size_estimate();
+                    cold_cgu.set_opt_level(Some(OptLevel::SizeMin));
+                    set_per_cgu_opt_level(cold_name.as_str(), OptLevel::SizeMin);
+
+                    split_cgus.push(hot_cgu);
+                    split_cgus.push(cold_cgu);
+                    cgu_names_to_remove.push(cgu.name());
                 }
+            }
+
+            if !cgu_names_to_remove.is_empty() {
+                codegen_units.retain(|cgu| !cgu_names_to_remove.contains(&cgu.name()));
+                codegen_units.extend(split_cgus);
+                codegen_units.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
             }
         }
     }
