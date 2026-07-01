@@ -185,9 +185,12 @@ where
     //
     // Cold-only CGUs get SizeMin pre-link (smaller base IR via
     // cgu.set_opt_level) and SizeMin post-link (via the side channel).
-    // Mixed CGUs stay at O3 pre-link (for PGO hash matching between
-    // Phase 1 and Phase 2) and O3 post-link (via the side channel).
-    // Hot-only CGUs stay at O3 (default).
+    // Mixed CGUs stay at the global opt-level pre-link (for PGO hash
+    // matching between Phase 1 and Phase 2) and More (O2) post-link
+    // (via the side channel).  O2 provides a good balance of speed and
+    // code size for hot functions — nearly as fast as O3 but with
+    // less code bloat from excessive inlining and loop unrolling.
+    // Hot-only CGUs get More (O2) post-link via the side channel.
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
             let hot_funcs = read_hot_function_list(hot_func_path);
@@ -211,7 +214,7 @@ where
                     cgu.set_opt_level(Some(OptLevel::SizeMin));
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
                 } else if any_hot {
-                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
+                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::More);
                 }
             }
         }
