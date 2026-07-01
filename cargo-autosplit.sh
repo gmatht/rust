@@ -222,7 +222,10 @@ cargo clean 2>/dev/null || true
 # ============================================================
 # Phase 2 — Final build with PGO use + hot/cold CGU splitting
 # ============================================================
-echo "=== [cargo-autosplit] Phase 2 — build (O3 + PGO + hot-cold-split) ===" >&2
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
+echo "=== [cargo-autosplit] Phase 2 — build (O3 + hot-cold-split, no PGO) ===" >&2
+# PGO profile-use adds ~200K of profile metadata to the binary without significantly
+# improving speed beyond the per-CGU O3/Oz splitting. Since hot-cold-split already
+# identifies hot functions and assigns O3 to them, PGO adds unnecessary bloat.
+RUSTFLAGS="-C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
 
 echo "=== [cargo-autosplit] Done ===" >&2
