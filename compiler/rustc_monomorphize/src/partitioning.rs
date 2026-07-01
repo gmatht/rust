@@ -453,6 +453,14 @@ fn merge_codegen_units<'tcx>(
         }
 
         let mut cgu_src = codegen_units.swap_remove(max_overlap_i);
+        if max_overlap_i == max_codegen_units {
+            // No compatible merge partner found (e.g. the only remaining
+            // CGUs are a hot-split CGU and a cold CGU).  Allow them to
+            // coexist beyond the target count rather than force-merging
+            // and undoing the hot/cold separation.
+            codegen_units.push(cgu_src);
+            break;
+        }
         let cgu_dst = &mut codegen_units[max_codegen_units - 1];
 
         // Move the items from `cgu_src` to `cgu_dst`. Some of them may be

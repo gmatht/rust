@@ -57,9 +57,11 @@ export RUSTC_WRAPPER=
 unset CARGO_PROFILE_RELEASE_OPT_LEVEL
 unset CARGO_PROFILE_RELEASE_LTO
 
-# codegen-units=2 leaves room for a ".hot" CGU alongside the cold CGU
-# so hot items stay in a separate CGU without post-hoc splitting.
-export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=2
+# codegen-units=2 would leave room for .hot CGUs alongside cold CGUs,
+# but the ~34K overhead outweighs the benefit.  Instead, we use cgu=1
+# and the merge pass skips hot/cold merges, letting them coexist at
+# the cost of one extra CGU only for crates with mixed hot/cold items.
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
 export CARGO_PROFILE_RELEASE_LTO=fat
 
 # With --target, cargo stores artifacts under target/<target>/release/
