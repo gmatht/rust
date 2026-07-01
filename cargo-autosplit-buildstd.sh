@@ -57,9 +57,9 @@ export RUSTC_WRAPPER=
 unset CARGO_PROFILE_RELEASE_OPT_LEVEL
 unset CARGO_PROFILE_RELEASE_LTO
 
-# Match the sysroot std build settings: single CGU per crate prevents
-# the ~67K bloat from cargo's default 16-CGU partitioning.
-export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+# codegen-units=2 leaves room for a ".hot" CGU alongside the cold CGU
+# so hot items stay in a separate CGU without post-hoc splitting.
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=2
 export CARGO_PROFILE_RELEASE_LTO=fat
 
 # With --target, cargo stores artifacts under target/<target>/release/
