@@ -214,24 +214,6 @@ where
                 if hot_funcs_in_crate { break; }
             }
 
-            // Only apply per-CGU opt-levels to crates that actually HAVE
-            // hot functions.  Dependency crates should stay at the global O3
-            // to match the manual-split baseline (Oz bin, O3 lib).
-            let mut hot_funcs_in_crate = false;
-            for cgu in codegen_units.iter() {
-                for (item, _data) in cgu.items().iter() {
-                    let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
-                    let crate_prefixed = format!("{}::{}", crate_name, item_name);
-                    if hot_funcs.contains(&item_name) || hot_funcs.contains(&crate_prefixed) {
-                        hot_funcs_in_crate = true;
-                        break;
-                    }
-                }
-                if hot_funcs_in_crate { break; }
-            }
-
-            if !hot_funcs_in_crate { return codegen_units; }
-
             for cgu in codegen_units.iter_mut() {
                 let mut any_hot = false;
                 let mut any_cold = false;
