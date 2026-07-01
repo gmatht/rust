@@ -191,28 +191,7 @@ where
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
             let hot_funcs = read_hot_function_list(hot_func_path);
-
             let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
-            eprintln!("HOTCOLD: processing {} CGUs for crate {}", codegen_units.len(), crate_name);
-            eprintln!("HOTCOLD:   hot functions: {} entries", hot_funcs.len());
-
-            // First pass: check if this crate has ANY hot functions.
-            // If no hot functions exist in this crate, it's a dependency
-            // crate — skip per-CGU opt-level entirely so it stays at O3
-            // (matching the manual-split baseline where the library crate
-            // gets O3).
-            let mut hot_funcs_in_crate = false;
-            for cgu in codegen_units.iter() {
-                for (item, _data) in cgu.items().iter() {
-                    let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
-                    let crate_prefixed = format!("{}::{}", crate_name, item_name);
-                    if hot_funcs.contains(&item_name) || hot_funcs.contains(&crate_prefixed) {
-                        hot_funcs_in_crate = true;
-                        break;
-                    }
-                }
-                if hot_funcs_in_crate { break; }
-            }
 
             for cgu in codegen_units.iter_mut() {
                 let mut any_hot = false;
