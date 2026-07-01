@@ -226,17 +226,24 @@ echo "=== [cargo-autosplit] Phase 2 — build (PGO use + hot-cold-split) ===" >&
 # PGO profile-use provides function-level hot/cold annotation to LLVM's
 # optimizer, improving performance for hot functions.  The per-CGU opt-level
 # side channel (from partitioning.rs) ensures cold CGUs get SizeMin (Oz)
-# and hot CGUs get More (O2) during ThinLTO post-link, regardless of the
-# global opt-level.  The global opt-level is set to O3 to allow PGO-guided
-# inlining and optimization at the module level.
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
+# and hot CGUs get Aggressive (O3) during ThinLTO post-link, regardless
+# of the global opt-level.  The global opt-level is set to O3 to allow
+# PGO-guided inlining and optimization at the module level.
+RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 -C link-arg=-Wl,-s $HOT_COLD_FLAGS" cargo "$@"
 
-# Strip the output binary to remove any remaining non-essential sections
-# (e.g., .note, .comment) that Cargo's profile.release.strip may leave behind.
+# Aggressively strip the output binary to remove any remaining non-essential
+# sections (e.g., .note, .comment, .relro_padding) that Cargo's
+# profile.release.strip may leave behind.
+STRIP_BIN="$PROFDATA"
+STRIP_BIN="${STRIP_BIN/llvm-profdata/llvm-strip}"
 for f in "$REL_DIR"/*; do
     if [ -f "$f" ] && [ -x "$f" ] && ! [ -d "$f" ]; then
         if file "$f" 2>/dev/null | grep -q 'ELF.*executable'; then
-            strip "$f" 2>/dev/null || true
+            if [ -x "$STRIP_BIN" ]; then
+                "$STRIP_BIN" --strip-all "$f" 2>/dev/null || true
+            else
+                strip "$f" 2>/dev/null || true
+            fi
         fi
     fi
 done
