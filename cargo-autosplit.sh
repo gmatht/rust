@@ -199,7 +199,7 @@ for f in "$REL_DIR"/*; do
     if [ -f "$f" ] && [ -x "$f" ] && ! [ -d "$f" ]; then
         if file "$f" 2>/dev/null | grep -q 'ELF.*executable'; then
             echo "  running $f ..." >&2
-            "$f" 5 >/dev/null 2>&1 || true
+            "$f" 15 >/dev/null 2>&1 || true
         fi
     fi
 done
@@ -229,7 +229,7 @@ echo "=== [cargo-autosplit] Phase 2 — build (PGO use + hot-cold-split) ===" >&
 # and hot CGUs get Aggressive (O3) during ThinLTO post-link, regardless
 # of the global opt-level.  The global opt-level is set to O3 to allow
 # PGO-guided inlining and optimization at the module level.
-RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 -C link-arg=-Wl,-s $HOT_COLD_FLAGS" cargo "$@"
+RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAGS" cargo "$@"
 
 # Aggressively strip the output binary to remove any remaining non-essential
 # sections (e.g., .note, .comment, .relro_padding) that Cargo's
