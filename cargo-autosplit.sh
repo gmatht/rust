@@ -199,7 +199,7 @@ for f in "$REL_DIR"/*; do
     if [ -f "$f" ] && [ -x "$f" ] && ! [ -d "$f" ]; then
         if file "$f" 2>/dev/null | grep -q 'ELF.*executable'; then
             echo "  running $f ..." >&2
-            "$f" 15 >/dev/null 2>&1 || true
+            "$f" 5 >/dev/null 2>&1 || true
         fi
     fi
 done
@@ -234,12 +234,16 @@ RUSTFLAGS="-C profile-use=$PGO_DIR/merged.profdata -C opt-level=3 $HOT_COLD_FLAG
 # Aggressively strip the output binary to remove any remaining non-essential
 # sections (e.g., .note, .comment, .relro_padding) that Cargo's
 # profile.release.strip may leave behind.
-STRIP_BIN="$PROFDATA"
-STRIP_BIN="${STRIP_BIN/llvm-profdata/llvm-strip}"
+STRIP_BIN=""
+if command -v llvm-strip >/dev/null 2>&1; then
+    STRIP_BIN="llvm-strip"
+elif [ -x /usr/bin/llvm-strip ]; then
+    STRIP_BIN="/usr/bin/llvm-strip"
+fi
 for f in "$REL_DIR"/*; do
     if [ -f "$f" ] && [ -x "$f" ] && ! [ -d "$f" ]; then
         if file "$f" 2>/dev/null | grep -q 'ELF.*executable'; then
-            if [ -x "$STRIP_BIN" ]; then
+            if [ -n "$STRIP_BIN" ]; then
                 "$STRIP_BIN" --strip-all "$f" 2>/dev/null || true
             else
                 strip "$f" 2>/dev/null || true
