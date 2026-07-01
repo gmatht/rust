@@ -426,7 +426,10 @@ fn merge_codegen_units<'tcx>(
         let cgu_dst = &codegen_units[max_codegen_units - 1];
 
         // Find the CGU that overlaps the most with `cgu_dst`. In the case of a
-        // tie, favour the earlier (bigger) CGU.
+        // tie, favour the earlier (bigger) CGU.  Skip pairs where one CGU
+        // is a hot-split CGU (name contains ".hot") and the other is not,
+        // to prevent hot and cold items from being merged back together.
+        let cgu_dst_is_hot = cgu_dst.name().as_str().contains(".hot");
         let mut max_overlap = 0;
         let mut max_overlap_i = max_codegen_units;
         for (i, cgu_src) in codegen_units.iter().enumerate().skip(max_codegen_units) {
@@ -434,6 +437,12 @@ fn merge_codegen_units<'tcx>(
                 // None of the remaining overlaps can exceed `max_overlap`, so
                 // stop looking.
                 break;
+            }
+
+            let cgu_src_is_hot = cgu_src.name().as_str().contains(".hot");
+            if cgu_dst_is_hot != cgu_src_is_hot {
+                // Don't merge hot and cold CGUs.
+                continue;
             }
 
             let overlap = compute_inlined_overlap(cgu_dst, cgu_src);
