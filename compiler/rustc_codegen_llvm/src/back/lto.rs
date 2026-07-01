@@ -611,8 +611,17 @@ pub(crate) fn run_pass_manager(
     // functions.  The global O3 matches the manual-split baseline behavior
     // (Oz for binary crate, O3 for library crate).
     let post_link_opt = if cgcx.hot_cold_split {
-        rustc_session::config::get_per_cgu_opt_level(&module.name)
-            .unwrap_or(config.opt_level.unwrap_or(config::OptLevel::Aggressive))
+        let side_channel = rustc_session::config::get_per_cgu_opt_level(&module.name);
+        eprintln!("HOTCOLD_LTO: module {} {} {}",
+            module.name,
+            side_channel.map(|_| "has_side_channel").unwrap_or("no_side_channel"),
+            match side_channel.unwrap_or(config.opt_level.unwrap_or(config::OptLevel::Aggressive)) {
+                config::OptLevel::SizeMin => "using SizeMin",
+                config::OptLevel::Aggressive => "using O3",
+                _ => "using OTHER",
+            }
+        );
+        side_channel.unwrap_or(config.opt_level.unwrap_or(config::OptLevel::Aggressive))
     } else {
         config.opt_level.unwrap_or(config::OptLevel::No)
     };
