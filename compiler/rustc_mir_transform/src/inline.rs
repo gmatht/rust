@@ -137,6 +137,11 @@ trait Inliner<'tcx> {
         callee_attrs: &CodegenFnAttrs,
     ) -> Result<(), &'static str>;
 
+    /// PGO hot function list for force-inlining cross-crate hot functions.
+    fn hot_funcs(&self) -> Option<&FxHashSet<String>> {
+        None
+    }
+
     /// Called when inlining succeeds.
     fn on_inline_success(
         &mut self,
@@ -367,6 +372,10 @@ impl<'tcx> Inliner<'tcx> for NormalInliner<'tcx> {
 
     fn should_inline_for_callee(&self, _: DefId) -> bool {
         true
+    }
+
+    fn hot_funcs(&self) -> Option<&FxHashSet<String>> {
+        self.hot_funcs.as_ref()
     }
 
     fn check_codegen_attributes_extra(
@@ -856,7 +865,14 @@ fn check_codegen_attributes<'tcx, I: Inliner<'tcx>>(
     // Reachability pass defines which functions are eligible for inlining. Generally inlining
     // other functions is incorrect because they could reference symbols that aren't exported.
     let is_generic = callsite.callee.args.non_erasable_generics().next().is_some();
-    if !is_generic && !tcx.cross_crate_inlinable(callsite.callee.def_id()) {
+    let callee_is_pgo_hot = inliner.hot_funcs().map_or(false, |funcs| {
+        let def_id = callsite.callee.def_id();
+        let name = rustc_middle::ty::print::with_no_trimmed_paths!(tcx.def_path_str(def_id));
+        let crate_name = tcx.crate_name(def_id.krate);
+        let crate_prefixed = format!("{}::{}", crate_name, name);
+        funcs.contains(&name) || funcs.contains(&crate_prefixed)
+    });
+    if !is_generic && !callee_is_pgo_hot && !tcx.cross_crate_inlinable(callsite.callee.def_id()) {
         return Err("not exported");
     }
 
