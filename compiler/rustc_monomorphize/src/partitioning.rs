@@ -203,7 +203,11 @@ where
                 for (item, _data) in cgu.items().iter() {
                     let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
                     let crate_prefixed = format!("{}::{}", crate_name, item_name);
-                    if hot_funcs.contains(&item_name) || hot_funcs.contains(&crate_prefixed) {
+                    let sym_name = item.symbol_name(tcx).name;
+                    if hot_funcs.contains(&item_name)
+                        || hot_funcs.contains(&crate_prefixed)
+                        || hot_funcs.contains(sym_name)
+                    {
                         any_hot = true;
                     } else {
                         any_cold = true;
