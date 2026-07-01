@@ -104,16 +104,10 @@ done
 # Phase 0.5 — Merge Phase-0 profiles and extract hot function list
 # ============================================================
 echo "=== [cargo-autosplit] Merging Phase-0 profiles ===" >&2
-ls -la "$PGO_DIR"/phase0_*.profraw 2>&1
 LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" $PROFDATA merge -o "$PGO_DIR/phase0_merged.profdata" "$PGO_DIR"/phase0_*.profraw 2>&1
 
-echo "=== [cargo-autosplit] Phase-0 merged profile: $(stat -c%s "$PGO_DIR/phase0_merged.profdata" 2>/dev/null || echo '0 bytes') ===" >&2
-
 echo "=== [cargo-autosplit] Extracting hot function list from Phase-0 profiles ===" >&2
-LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" "$PROFDATA" show --all-functions --counts "$PGO_DIR/phase0_merged.profdata" 2>&1 >"$PGO_DIR/phase0_show.txt"
-NUM_FUNCTIONS=$(grep -c '^  [A-Za-z]' "$PGO_DIR/phase0_show.txt" 2>/dev/null || echo 0)
-echo "=== [cargo-autosplit] Phase-0 profile has $NUM_FUNCTIONS functions ===" >&2
-cat "$PGO_DIR/phase0_show.txt" \
+LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" "$PROFDATA" show --all-functions --counts "$PGO_DIR/phase0_merged.profdata" 2>&1 \
     | awk '
 BEGIN {
     name = ""
@@ -168,7 +162,6 @@ END {
     }
 }
 ' | $CXXFILT 2>/dev/null | sort -u > "$PGO_DIR/hot_functions.txt"
-cp "$PGO_DIR/hot_functions.txt" /tmp/debug_hot_functions.txt 2>/dev/null || true
 
 NUM_HOT=$(wc -l < "$PGO_DIR/hot_functions.txt")
 echo "  Found $NUM_HOT hot functions (threshold >1% of max)" >&2
