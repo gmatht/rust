@@ -2,11 +2,8 @@
 
 use std::ops::{Range, RangeFrom};
 use std::{debug_assert_matches, iter};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+
 use rustc_abi::{ExternAbi, FieldIdx};
-use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::attrs::{InlineAttr, OptimizeAttr};
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
@@ -45,9 +42,6 @@ pub struct Inline;
 
 impl<'tcx> crate::MirPass<'tcx> for Inline {
     fn is_enabled(&self, sess: &rustc_session::Session) -> bool {
-        if sess.opts.unstable_opts.pgo_hot_inline {
-            return true;
-        }
         if let Some(enabled) = sess.opts.unstable_opts.inline_mir {
             return enabled;
         }
@@ -136,11 +130,6 @@ trait Inliner<'tcx> {
         callee_body: &Body<'tcx>,
         callee_attrs: &CodegenFnAttrs,
     ) -> Result<(), &'static str>;
-
-    /// PGO hot function list for force-inlining cross-crate hot functions.
-    fn hot_funcs(&self) -> Option<&FxHashSet<String>> {
-        None
-    }
 
     /// Called when inlining succeeds.
     fn on_inline_success(
@@ -296,41 +285,11 @@ struct NormalInliner<'tcx> {
     /// Indicates that the caller is #[inline] and just calls another function,
     /// and thus we can inline less into it as it'll be inlined itself.
     caller_is_inline_forwarder: bool,
-    /// Functions listed in -Z hot-function-list (PGO hot functions).
-    /// Cross-crate callers matching this list are force-inlined to pull them
-    /// into the caller's CGU, leaving the source crate pure-cold for SizeMin.
-    hot_funcs: Option<FxHashSet<String>>,
 }
 
 impl<'tcx> NormalInliner<'tcx> {
     fn past_depth_limit(&self) -> bool {
         self.history.len() > HISTORY_DEPTH_LIMIT || self.top_down_counter > TOP_DOWN_DEPTH_LIMIT
-    }
-
-    /// Check whether the callee at the given callsite matches the PGO hot function list.
-    fn is_hot_func(&self, callsite: &CallSite<'tcx>) -> bool {
-        let funcs = match &self.hot_funcs {
-            Some(f) => f,
-            None => return false,
-        };
-        let tcx = self.tcx();
-        let def_id = callsite.callee.def_id();
-        let callee_name = rustc_middle::ty::print::with_no_trimmed_paths!(
-            tcx.def_path_str(def_id)
-        );
-        let crate_name = tcx.crate_name(def_id.krate);
-        let crate_prefixed = format!("{}::{}", crate_name, callee_name);
-        if funcs.contains(&callee_name) || funcs.contains(&crate_prefixed) {
-            return true;
-        }
-        // PGO profiles format inherent impl methods as `<Type>::method` but
-        // def_path_str produces `Type::method`. Check both forms.
-        if let Some(angle) = angle_bracket_form(&callee_name) {
-            if funcs.contains(&angle) || funcs.contains(&format!("{}::{}", crate_name, angle)) {
-                return true;
-            }
-        }
-        false
     }
 }
 
@@ -338,12 +297,6 @@ impl<'tcx> Inliner<'tcx> for NormalInliner<'tcx> {
     fn new(tcx: TyCtxt<'tcx>, def_id: DefId, body: &Body<'tcx>) -> Self {
         let typing_env = body.typing_env(tcx);
         let codegen_fn_attrs = tcx.codegen_fn_attrs(def_id);
-
-        let hot_funcs = if tcx.sess.opts.unstable_opts.pgo_hot_inline {
-            tcx.sess.opts.unstable_opts.hot_function_list.as_ref().map(|p| read_hot_function_list(p.as_path()))
-        } else {
-            None
-        };
 
         Self {
             tcx,
@@ -356,7 +309,6 @@ impl<'tcx> Inliner<'tcx> for NormalInliner<'tcx> {
                 codegen_fn_attrs.inline,
                 InlineAttr::Hint | InlineAttr::Always | InlineAttr::Force { .. }
             ) && body_is_forwarder(body),
-            hot_funcs,
         }
     }
 
@@ -382,10 +334,6 @@ impl<'tcx> Inliner<'tcx> for NormalInliner<'tcx> {
 
     fn should_inline_for_callee(&self, _: DefId) -> bool {
         true
-    }
-
-    fn hot_funcs(&self) -> Option<&FxHashSet<String>> {
-        self.hot_funcs.as_ref()
     }
 
     fn check_codegen_attributes_extra(
@@ -429,13 +377,6 @@ impl<'tcx> Inliner<'tcx> for NormalInliner<'tcx> {
 
         let mut threshold = if self.caller_is_inline_forwarder || self.past_depth_limit() {
             tcx.sess.opts.unstable_opts.inline_mir_forwarder_threshold.unwrap_or(30)
-        } else if tcx.cross_crate_inlinable(callsite.callee.def_id())
-            && self.is_hot_func(callsite)
-        {
-            // Force-inline hot cross-crate functions so they are absorbed into
-            // the caller's CGU, allowing the source crate's CGU to become
-            // pure-cold and receive SizeMin (Oz) post-link.
-            usize::MAX
         } else if tcx.cross_crate_inlinable(callsite.callee.def_id()) {
             tcx.sess.opts.unstable_opts.inline_mir_hint_threshold.unwrap_or(100)
         } else {
@@ -875,14 +816,7 @@ fn check_codegen_attributes<'tcx, I: Inliner<'tcx>>(
     // Reachability pass defines which functions are eligible for inlining. Generally inlining
     // other functions is incorrect because they could reference symbols that aren't exported.
     let is_generic = callsite.callee.args.non_erasable_generics().next().is_some();
-    let callee_is_pgo_hot = inliner.hot_funcs().map_or(false, |funcs| {
-        let def_id = callsite.callee.def_id();
-        let name = rustc_middle::ty::print::with_no_trimmed_paths!(tcx.def_path_str(def_id));
-        let crate_name = tcx.crate_name(def_id.krate);
-        let crate_prefixed = format!("{}::{}", crate_name, name);
-        funcs.contains(&name) || funcs.contains(&crate_prefixed)
-    });
-    if !is_generic && !callee_is_pgo_hot && !tcx.cross_crate_inlinable(callsite.callee.def_id()) {
+    if !is_generic && !tcx.cross_crate_inlinable(callsite.callee.def_id()) {
         return Err("not exported");
     }
 
@@ -1481,41 +1415,4 @@ fn body_is_forwarder(body: &Body<'_>) -> bool {
                     | TerminatorKind::UnwindTerminate(_)
             )
     })
-}
-
-fn read_hot_function_list(path: &Path) -> FxHashSet<String> {
-    let file = match File::open(path) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::debug!("pgo-hot-inline: could not open hot function list '{}': {}", path.display(), e);
-            return FxHashSet::default();
-        }
-    };
-    let reader = BufReader::new(file);
-    reader
-        .lines()
-        .filter_map(|line| {
-            let line = line.ok()?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
-        .collect()
-}
-
-/// Convert `Type::method` to `<Type>::method` for matching PGO profile output.
-fn angle_bracket_form(name: &str) -> Option<String> {
-    if let Some(pos) = name.rfind("::") {
-        let (ty, method) = name.split_at(pos);
-        if !ty.starts_with('<') {
-            Some(format!("<{}>{}", ty, method))
-        } else {
-            None
-        }
-    } else {
-        None
-    }
 }
