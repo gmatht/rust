@@ -73,9 +73,15 @@ BUILD_STD_GLOBAL="-Z build-std"
 
 # ============================================================
 # Phase 0 — Warm-up: PGO profile generation at O3 (no splitting)
+# NOTE: Uses system rustc (not stage1) because the stage1 profiling
+# runtime doesn't flush PGO counters on exit.  System rustc's runtime
+# works correctly with -C profile-generate.
 # ============================================================
 echo "=== [cargo-autosplit-buildstd] Phase 0 — warm-up PGO generation (O3, no splitting) ===" >&2
-RUSTFLAGS="-C profile-generate=$PGO_DIR -C opt-level=3" cargo $BUILD_STD_GLOBAL "$@" --target "$HOST_TARGET"
+RUSTC_SAVED="$RUSTC"
+export RUSTC="rustc"
+RUSTFLAGS="-C profile-generate=$PGO_DIR -C opt-level=3" cargo "$@" --target "$HOST_TARGET"
+export RUSTC="$RUSTC_SAVED"
 
 # Remove build-script PGO profiles so they don't contaminate hot-function extraction
 echo "=== [cargo-autosplit-buildstd] Collecting Phase-0 profiles ===" >&2
