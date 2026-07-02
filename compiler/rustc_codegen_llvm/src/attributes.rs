@@ -614,32 +614,38 @@ pub(crate) fn llfn_attrs_from_instance<'ll, 'tcx>(
     to_add.extend(target_features_attr(cx, tcx, function_features));
 
     // PGO-driven per-function optimization: if hot-cold-split is enabled, cold
-    // functions get minsize+optsize LLVM attributes to reduce code size even
-    // within an O3 CGU. Tepid functions get optsize only.
+    // functions from the LOCAL crate get minsize+optsize LLVM attributes to
+    // reduce code size within an O3 CGU.  Tepid functions get optsize only.
+    // Dependency crate functions (core, alloc, std) are left at full O3 speed.
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(instance) = instance {
             let def_id = instance.def_id();
-            let fn_name = with_no_trimmed_paths!(tcx.def_path_str(def_id));
-            let crate_name = tcx.crate_name(def_id.krate);
-            let crate_prefixed = format!("{}::{}", crate_name, fn_name);
+            if !def_id.is_local() {
+                // Skip dep crate functions — they need full O3 speed,
+                // especially when called from hot code paths.
+            } else {
+                let fn_name = with_no_trimmed_paths!(tcx.def_path_str(def_id));
+                let crate_name = tcx.crate_name(def_id.krate);
+                let crate_prefixed = format!("{}::{}", crate_name, fn_name);
 
-            let hot_guard = read_func_list_once(
-                tcx.sess.opts.unstable_opts.hot_function_list.as_deref(),
-                &HOT_LIST_CACHE,
-            );
-            let tepid_guard = read_func_list_once(
-                tcx.sess.opts.unstable_opts.tepid_function_list.as_deref(),
-                &TEPID_LIST_CACHE,
-            );
+                let hot_guard = read_func_list_once(
+                    tcx.sess.opts.unstable_opts.hot_function_list.as_deref(),
+                    &HOT_LIST_CACHE,
+                );
+                let tepid_guard = read_func_list_once(
+                    tcx.sess.opts.unstable_opts.tepid_function_list.as_deref(),
+                    &TEPID_LIST_CACHE,
+                );
 
-            let is_hot = hot_guard.1.contains(&fn_name) || hot_guard.1.contains(&crate_prefixed);
-            let is_tepid = tepid_guard.1.contains(&fn_name) || tepid_guard.1.contains(&crate_prefixed);
+                let is_hot = hot_guard.1.contains(&fn_name) || hot_guard.1.contains(&crate_prefixed);
+                let is_tepid = tepid_guard.1.contains(&fn_name) || tepid_guard.1.contains(&crate_prefixed);
 
-            if !is_hot && !is_tepid {
-                to_add.push(AttributeKind::MinSize.create_attr(cx.llcx));
-                to_add.push(AttributeKind::OptimizeForSize.create_attr(cx.llcx));
-            } else if is_tepid && !is_hot {
-                to_add.push(AttributeKind::OptimizeForSize.create_attr(cx.llcx));
+                if !is_hot && !is_tepid {
+                    to_add.push(AttributeKind::MinSize.create_attr(cx.llcx));
+                    to_add.push(AttributeKind::OptimizeForSize.create_attr(cx.llcx));
+                } else if is_tepid && !is_hot {
+                    to_add.push(AttributeKind::OptimizeForSize.create_attr(cx.llcx));
+                }
             }
         }
     }
