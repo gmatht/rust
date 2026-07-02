@@ -102,62 +102,30 @@ done
 echo "=== [cargo-autosplit-buildstd] Merging Phase-0 profiles ===" >&2
 LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" $PROFDATA merge -o "$PGO_DIR/phase0_merged.profdata" "$PGO_DIR"/phase0_*.profraw 2>&1
 
-echo "=== [cargo-autosplit-buildstd] Extracting hot function list from Phase-0 profiles ===" >&2
+echo "=== [cargo-autosplit-buildstd] Extracting hot/tepid function lists from Phase-0 profiles ===" >&2
+
+# Hot: block count > 1% of max → functions get CGU-level O3, no per-function attr
 LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" "$PROFDATA" show --all-functions --counts "$PGO_DIR/phase0_merged.profdata" 2>&1 \
     | awk '
-BEGIN {
-    name = ""
-    first_count = 0
-    max_count = 0
-}
-# Function name lines: start with 2 spaces, end with :
-/^  / && /:$/ {
-    if ($1 == "Counters:" || $1 == "Hash:") next
-    if (name != "" && first_count > 0) {
-        if (first_count > max_count) max_count = first_count
-        gnames[name] = first_count
-    }
-    this_name = $1
-    gsub(/:$/, "", this_name)
-    n = split(this_name, parts, ";")
-    if (n > 1) this_name = parts[n]
-    name = this_name
-    first_count = 0
-}
-# Block counts line — extract first count value
-/^    Block counts: \[/ {
-    if (name != "") {
-        line = $0
-        gsub(/^.*\[/, "", line)
-        gsub(/,.*$/, "", line)
-        gsub(/ /, "", line)
-        first_count = line + 0
-    }
-}
-# Non-indented line (summary) — end of last function
-/^[^ ]/ && NR > 1 {
-    if (name != "" && first_count > 0) {
-        if (first_count > max_count) max_count = first_count
-        gnames[name] = first_count
-    }
-    name = ""
-    first_count = 0
-}
-END {
-    if (name != "" && first_count > 0) {
-        if (first_count > max_count) max_count = first_count
-        gnames[name] = first_count
-    }
-    # Print names whose count is > 1% of max count
-    threshold = max_count * 0.01
-    if (threshold < 1) threshold = 1
-    for (n in gnames) {
-        if (gnames[n] > threshold) {
-            print n
-        }
-    }
-}
+BEGIN { name=""; first=0; max=0 }
+/^  / && /:$/ { if($1=="Counters:"||$1=="Hash:") next; if(name!=""&&first>0) {if(first>max)max=first; gnames[name]=first} this=$1; gsub(/:$/,"",this); n=split(this,parts,";"); if(n>1)this=parts[n]; name=this; first=0 }
+/^    Block counts: \[/ { if(name!="") { line=$0; gsub(/^.*\[/,"",line); gsub(/,.*$/,"",line); gsub(/ /,"",line); first=line+0 } }
+/^[^ ]/ && NR>1 { if(name!=""&&first>0) {if(first>max)max=first; gnames[name]=first} name=""; first=0 }
+END { if(name!=""&&first>0) {if(first>max)max=first; gnames[name]=first} thr=max*0.01; if(thr<1)thr=1; for(n in gnames) if(gnames[n]>thr) print n }
 ' | rustfilt 2>/dev/null | sort -u > "$PGO_DIR/hot_functions.txt"
+
+# Tepid: 0.2% < block count <= 1% → CGU-level O3 + per-function optsize attr
+LD_LIBRARY_PATH="$RUSTC_LLVM_DIR:$RUSTC_LLVM_LIB" "$PROFDATA" show --all-functions --counts "$PGO_DIR/phase0_merged.profdata" 2>&1 \
+    | awk '
+BEGIN { name=""; first=0; max=0 }
+/^  / && /:$/ { if($1=="Counters:"||$1=="Hash:") next; if(name!=""&&first>0) {if(first>max)max=first; gnames[name]=first} this=$1; gsub(/:$/,"",this); n=split(this,parts,";"); if(n>1)this=parts[n]; name=this; first=0 }
+/^    Block counts: \[/ { if(name!="") { line=$0; gsub(/^.*\[/,"",line); gsub(/,.*$/,"",line); gsub(/ /,"",line); first=line+0 } }
+/^[^ ]/ && NR>1 { if(name!=""&&first>0) {if(first>max)max=first; gnames[name]=first} name=""; first=0 }
+END { if(name!=""&&first>0) {if(first>max)max=first; gnames[name]=first} hot=max*0.01; if(hot<1)hot=1; tep=max*0.002; if(tep<1)tep=1; for(n in gnames) if(gnames[n]<=hot && gnames[n]>tep) print n }
+' | rustfilt 2>/dev/null | sort -u > "$PGO_DIR/tepid_functions.txt"
+
+NUM_HOT=$(wc -l < "$PGO_DIR/hot_functions.txt")
+echo "  Found $NUM_HOT hot functions (threshold >1% of max)" >&2
 
 NUM_HOT=$(wc -l < "$PGO_DIR/hot_functions.txt")
 echo "  Found $NUM_HOT hot functions (threshold >1% of max)" >&2
@@ -173,7 +141,7 @@ rm -f "$REL_DIR/.cargo-lock" "$REL_DIR/.cargo-ok" 2>/dev/null || true
 
 HOT_COLD_FLAGS=""
 if [ "$NUM_HOT" -gt 0 ]; then
-    HOT_COLD_FLAGS="-Z hot-cold-split -Z hot-function-list=$PGO_DIR/hot_functions.txt"
+    HOT_COLD_FLAGS="-Z hot-cold-split -Z hot-function-list=$PGO_DIR/hot_functions.txt -Z tepid-function-list=$PGO_DIR/tepid_functions.txt"
     echo "=== [cargo-autosplit-buildstd] Hot function list has $NUM_HOT entries, enabling CGU splitting ===" >&2
 else
     echo "=== [cargo-autosplit-buildstd] No hot functions found, skipping CGU splitting ===" >&2

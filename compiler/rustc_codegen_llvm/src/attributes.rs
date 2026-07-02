@@ -18,6 +18,12 @@ use crate::llvm::AttributePlace::Function;
 use crate::llvm::{
     self, AllocKindFlags, Attribute, AttributeKind, AttributePlace, MemoryEffects, Value,
 };
+
+use rustc_data_structures::fx::FxHashSet;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::sync::Mutex;
+use rustc_middle::ty::print::with_no_trimmed_paths;
 use crate::{Session, attributes, llvm_util};
 
 pub(crate) fn apply_to_llfn(llfn: &Value, idx: AttributePlace, attrs: &[&Attribute]) {
@@ -607,7 +613,72 @@ pub(crate) fn llfn_attrs_from_instance<'ll, 'tcx>(
 
     to_add.extend(target_features_attr(cx, tcx, function_features));
 
+    // PGO-driven per-function optimization: if hot-cold-split is enabled, cold
+    // functions get minsize+optsize LLVM attributes to reduce code size even
+    // within an O3 CGU. Tepid functions get optsize only.
+    if tcx.sess.opts.unstable_opts.hot_cold_split {
+        if let Some(instance) = instance {
+            let def_id = instance.def_id();
+            let fn_name = with_no_trimmed_paths!(tcx.def_path_str(def_id));
+            let crate_name = tcx.crate_name(def_id.krate);
+            let crate_prefixed = format!("{}::{}", crate_name, fn_name);
+
+            let hot_guard = read_func_list_once(
+                tcx.sess.opts.unstable_opts.hot_function_list.as_deref(),
+                &HOT_LIST_CACHE,
+            );
+            let tepid_guard = read_func_list_once(
+                tcx.sess.opts.unstable_opts.tepid_function_list.as_deref(),
+                &TEPID_LIST_CACHE,
+            );
+
+            let is_hot = hot_guard.1.contains(&fn_name) || hot_guard.1.contains(&crate_prefixed);
+            let is_tepid = tepid_guard.1.contains(&fn_name) || tepid_guard.1.contains(&crate_prefixed);
+
+            if !is_hot && !is_tepid {
+                to_add.push(AttributeKind::MinSize.create_attr(cx.llcx));
+                to_add.push(AttributeKind::OptimizeForSize.create_attr(cx.llcx));
+            } else if is_tepid && !is_hot {
+                to_add.push(AttributeKind::OptimizeForSize.create_attr(cx.llcx));
+            }
+        }
+    }
+
     attributes::apply_to_llfn(llfn, Function, &to_add);
+}
+
+use std::sync::OnceLock;
+
+static HOT_LIST_CACHE: OnceLock<Mutex<(std::path::PathBuf, FxHashSet<String>)>> = OnceLock::new();
+static TEPID_LIST_CACHE: OnceLock<Mutex<(std::path::PathBuf, FxHashSet<String>)>> = OnceLock::new();
+
+fn read_func_list_once<'a>(
+    path: Option<&'a std::path::Path>,
+    cache: &'a OnceLock<Mutex<(std::path::PathBuf, FxHashSet<String>)>>,
+) -> std::sync::MutexGuard<'a, (std::path::PathBuf, FxHashSet<String>)> {
+    let mut guard = cache.get_or_init(|| Mutex::new((std::path::PathBuf::new(), FxHashSet::default()))).lock().unwrap();
+    if let Some(p) = path {
+        if guard.0 != p {
+            guard.0 = p.to_path_buf();
+            guard.1 = read_func_list_file(p);
+        }
+    }
+    guard
+}
+
+fn read_func_list_file(path: &std::path::Path) -> FxHashSet<String> {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return FxHashSet::default(),
+    };
+    BufReader::new(file)
+        .lines()
+        .filter_map(|line| {
+            let l = line.ok()?;
+            let t = l.trim();
+            if t.is_empty() || t.starts_with('#') { None } else { Some(t.to_owned()) }
+        })
+        .collect()
 }
 
 fn wasm_import_module(tcx: TyCtxt<'_>, id: DefId) -> Option<&String> {
