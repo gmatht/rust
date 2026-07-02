@@ -62,7 +62,7 @@ unset CARGO_PROFILE_RELEASE_LTO
 # and the merge pass skips hot/cold merges, letting them coexist at
 # the cost of one extra CGU only for crates with mixed hot/cold items.
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
-export CARGO_PROFILE_RELEASE_LTO=fat
+export CARGO_PROFILE_RELEASE_LTO=thin
 
 # With --target, cargo stores artifacts under target/<target>/release/
 # Note: -Z build-std goes BEFORE the subcommand (cargo global flag),
