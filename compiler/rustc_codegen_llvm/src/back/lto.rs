@@ -616,7 +616,7 @@ pub(crate) fn run_pass_manager(
     let cgu_name = module.name.strip_suffix(".rcgu.o").unwrap_or(&module.name);
     let post_link_opt = if cgcx.hot_cold_split {
         rustc_session::config::get_per_cgu_opt_level(cgu_name)
-            .unwrap_or(config::OptLevel::SizeMin)
+            .unwrap_or(config.opt_level.unwrap_or(config::OptLevel::No))
     } else {
         config.opt_level.unwrap_or(config::OptLevel::No)
     };
