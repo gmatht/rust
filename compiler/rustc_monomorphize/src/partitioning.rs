@@ -154,7 +154,7 @@ where
 
     // Place all mono items into a codegen unit. `place_mono_items` is
     // responsible for initializing the CGU size estimates.
-    let PlacedMonoItems { mut codegen_units, internalization_candidates } = {
+    let PlacedMonoItems { mut codegen_units, mut internalization_candidates } = {
         let _prof_timer = tcx.prof.generic_activity("cgu_partitioning_place_items");
         let placed = place_mono_items(cx, mono_items);
 
@@ -173,54 +173,94 @@ where
     }
 
     // Hot/cold split: when -Z hot-cold-split is enabled, set per-CGU
-    // opt-level based on the hot function list, stored in a side channel
-    // for ThinLTO post-link use (lto.rs::run_pass_manager).
-    //
-    // IMPORTANT: We do NOT split CGUs — mixed CGUs (containing both hot
-    // and cold items) stay as one module to avoid increasing the number
-    // of object files (each .rcgu.o has ELF header/symbol-table overhead).
-    // PGO profile-use in Phase 2 provides function-level hot/cold annotation
-    // to LLVM's optimizer, which makes per-function decisions within the
-    // module.
-    //
-    // Cold-only CGUs get SizeMin pre-link (smaller base IR via
-    // cgu.set_opt_level) and SizeMin post-link (via the side channel).
-    // Mixed CGUs stay at the global opt-level pre-link (for PGO hash
-    // matching between Phase 1 and Phase 2) and More (O2) post-link
-    // (via the side channel).  O2 provides a good balance of speed and
-    // code size for hot functions — nearly as fast as O3 but with
-    // less code bloat from excessive inlining and loop unrolling.
-    // Hot-only CGUs get More (O2) post-link via the side channel.
+    // opt-level based on the hot function list.  Mixed CGUs (containing
+    // both hot and cold items) are SPLIT into .hot and .cold CGUs.
+    // Cold CGU items get Default visibility to resolve cross-CGU refs.
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
-            let hot_funcs = read_hot_function_list(hot_func_path);
+            let hot_funcs_raw = read_hot_function_list(hot_func_path);
+            let hot_funcs: FxHashSet<String> = hot_funcs_raw.iter().cloned().collect();
             let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
 
-            for cgu in codegen_units.iter_mut() {
-                let mut any_hot = false;
-                let mut any_cold = false;
+            if !hot_funcs_raw.is_empty() {
+                eprintln!("hot-cold-split: {} hot functions (crate={:?}), e.g. {:?}",
+                    hot_funcs_raw.len(), crate_name, &hot_funcs_raw[..hot_funcs_raw.len().min(5)]);
+            } else {
+                eprintln!("hot-cold-split: WARNING hot function list is EMPTY (crate={:?})", crate_name);
+            }
 
-                for (item, _data) in cgu.items().iter() {
+            let mut new_cgus: Vec<CodegenUnit<'tcx>> = Vec::new();
+
+            for cgu in codegen_units.iter_mut() {
+                let all_items = std::mem::take(cgu.items_mut());
+                let mut hot_items: FxIndexMap<MonoItem<'tcx>, MonoItemData> =
+                    FxIndexMap::default();
+                let mut cold_items: FxIndexMap<MonoItem<'tcx>, MonoItemData> =
+                    FxIndexMap::default();
+
+                for (item, data) in all_items {
                     let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
                     let crate_prefixed = format!("{}::{}", crate_name, item_name);
                     let sym_name = item.symbol_name(tcx).name;
-                    if hot_funcs.contains(&item_name)
+                    let is_hot = hot_funcs.contains(&item_name)
                         || hot_funcs.contains(&crate_prefixed)
-                        || hot_funcs.contains(sym_name)
-                    {
-                        any_hot = true;
+                        || hot_funcs.contains(sym_name);
+                    if is_hot {
+                        hot_items.insert(item, data);
                     } else {
-                        any_cold = true;
+                        cold_items.insert(item, data);
                     }
                 }
 
-                if any_cold && !any_hot {
+                if hot_items.is_empty() {
+                    *cgu.items_mut() = cold_items;
                     cgu.set_opt_level(Some(OptLevel::SizeMin));
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
-                } else if any_hot {
+                } else if cold_items.is_empty() {
+                    *cgu.items_mut() = hot_items;
                     set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
+                } else {
+                    // Mixed CGU: keep hot items, move cold to .cold CGU
+                    let hot_set: FxHashSet<MonoItem<'tcx>> =
+                        hot_items.keys().copied().collect();
+                    let mut true_cold: FxIndexMap<MonoItem<'tcx>, MonoItemData> =
+                        FxIndexMap::default();
+                    for (item, data) in cold_items {
+                        let users = cx.usage_map.get_user_items(item);
+                        if users.iter().any(|u| hot_set.contains(u)) {
+                            hot_items.insert(item, data);
+                        } else {
+                            true_cold.insert(item, data);
+                        }
+                    }
+
+                    *cgu.items_mut() = hot_items;
+                    cgu.compute_size_estimate();
+                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
+
+                    if !true_cold.is_empty() {
+                        let cold_name = Symbol::intern(&format!("{}.cold", cgu.name()));
+                        let mut cold_cgu = CodegenUnit::new(cold_name);
+                        for (item, data) in true_cold.iter_mut() {
+                            // Promote to Default so cross-CGU references resolve
+                            data.visibility = Visibility::Default;
+                            internalization_candidates.remove(item);
+                        }
+                        *cold_cgu.items_mut() = true_cold;
+                        cold_cgu.compute_size_estimate();
+                        cold_cgu.set_opt_level(Some(OptLevel::SizeMin));
+                        set_per_cgu_opt_level(cold_name.as_str(), OptLevel::SizeMin);
+                        new_cgus.push(cold_cgu);
+                    }
                 }
             }
+
+            for cgu in codegen_units.iter_mut() {
+                if !cgu.items().is_empty() {
+                    cgu.compute_size_estimate();
+                }
+            }
+            codegen_units.extend(new_cgus);
         }
     }
 
@@ -1367,12 +1407,12 @@ fn dump_mono_items_stats<'tcx>(
 /// Read the hot function list file produced by the PGO profile analysis in
 /// cargo-autosplit.sh. The file contains one function symbol name per line.
 /// Returns an empty `HashSet` if the file cannot be read or doesn't exist.
-fn read_hot_function_list(path: &Path) -> FxHashSet<String> {
+fn read_hot_function_list(path: &Path) -> Vec<String> {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            debug!("hot-cold-split: could not open hot function list '{}': {}", path.display(), e);
-            return FxHashSet::default();
+            eprintln!("hot-cold-split: could not open hot function list '{}': {}", path.display(), e);
+            return Vec::new();
         }
     };
     let reader = BufReader::new(file);
