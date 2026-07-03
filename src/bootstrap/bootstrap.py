@@ -187,9 +187,9 @@ def verify(path, expected, verbose):
     verified = found == expected
     if not verified:
         eprint(
-            "invalid checksum:\n" "    found:    {}\n" "    expected: {}".format(
-                found, expected
-            )
+            "invalid checksum:\n"
+            "    found:    {}\n"
+            "    expected: {}".format(found, expected)
         )
     return verified
 
@@ -1029,7 +1029,13 @@ class RustBuild(object):
         # Run this from the source directory so cargo finds .cargo/config
         # Use stdin=DEVNULL to prevent cargo's rustc probe from reading
         # residual pty data as Rust source (happens in tmux/cron environments).
-        run(args, env=env, verbose=self.verbose, cwd=self.rust_root, stdin=subprocess.DEVNULL)
+        run(
+            args,
+            env=env,
+            verbose=self.verbose,
+            cwd=self.rust_root,
+            stdin=subprocess.DEVNULL,
+        )
 
         if "GITHUB_ACTIONS" in env:
             print("::endgroup::")
@@ -1375,7 +1381,13 @@ def bootstrap(args):
     args.extend(sys.argv[1:])
     env = os.environ.copy()
     env["BOOTSTRAP_PYTHON"] = sys.executable
-    run(args, env=env, verbose=build.verbose, is_bootstrap=True, stdin=subprocess.DEVNULL)
+    run(
+        args,
+        env=env,
+        verbose=build.verbose,
+        is_bootstrap=True,
+        stdin=subprocess.DEVNULL,
+    )
 
 
 def main():

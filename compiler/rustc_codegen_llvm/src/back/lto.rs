@@ -606,11 +606,11 @@ pub(crate) fn run_pass_manager(
     // dependency CGUs are classified as cold-only, getting SizeMin pre-link.
     // Using SizeMin post-link for the fallback keeps them at SizeMin overall,
     // matching the manual-split baseline where dependency crates get the
-    // binary's Oz profile.  Previously the fallback was Aggressive (O3),
+    // binary's Oz profile. Previously the fallback was Aggressive (O3),
     // which inflated the binary by ~42K (or more) from cold dependency code.
     //
     // Strip the .rcgu.o suffix from module names so that the side-channel
-    // lookup (keyed by bare CGU name) succeeds.  ThinLTO module names carry
+    // lookup (keyed by bare CGU name) succeeds. ThinLTO module names carry
     // the extension added during object-file emission, but partitioning stored
     // the bare CGU name.
     let cgu_name = module.name.strip_suffix(".rcgu.o").unwrap_or(&module.name);
