@@ -40,6 +40,18 @@ cd /path/to/project
 ../rustc/optimize-project.sh --train-cmd './benchmark --bench'
 ```
 
+### Build Linux and Win64 binaries
+```bash
+./build-linux-win64.sh
+```
+Windows toolchain overrides if needed:
+```bash
+WINDOWS_CARGO=/mnt/c/Users/s_pam/.cargo/bin/cargo.exe \
+WINDOWS_RUSTC=/mnt/c/Users/s_pam/.cargo/bin/rustc.exe \
+WINDOWS_BUILD_DIR=/mnt/d/tmp/rust-pgso-win64-build \
+./build-linux-win64.sh
+```
+
 ### Release workflow
 - `.github/workflows/optimized-rustc-release.yml`
 
