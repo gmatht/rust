@@ -1,79 +1,58 @@
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/rust-lang/www.rust-lang.org/master/static/images/rust-social-wide-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/rust-lang/www.rust-lang.org/master/static/images/rust-social-wide-light.svg">
-    <img alt="The Rust Programming Language: A language empowering everyone to build reliable and efficient software"
-         src="https://raw.githubusercontent.com/rust-lang/www.rust-lang.org/master/static/images/rust-social-wide-light.svg"
-         width="50%">
-  </picture>
+# rustc PGSO (Profile Guided Size Optimisation) Fork
 
-[Website][Rust] | [Getting started] | [Learn] | [Documentation] | [Contributing]
-</div>
+Fork of Rust with file-driven CGU tiering and per-function optimization levels.
 
-This is the main source code repository for [Rust]. It contains the compiler,
-standard library, and documentation.
+../rustc/optimize-project.sh --train-cmd './benchmark --bench'
+(Where ./benchmark is the charactaristic workload you want to use for profiling)
 
-[Rust]: https://www.rust-lang.org/
-[Getting Started]: https://www.rust-lang.org/learn/get-started
-[Learn]: https://www.rust-lang.org/learn
-[Documentation]: https://www.rust-lang.org/learn#learn-use
-[Contributing]: CONTRIBUTING.md
+## Purpose
+The purpose of this is to make hot code fast and cold code small in rust projects.
+- without hand-editing component crates
+- Keep the hot/warm/tepid/cold code heuristics flexible by using externally supplied lists
+  - And provide scripts so they don't need to be created by hand.
 
-## Why Rust?
+## Design
+- `-Z cgu-opt-levels=<path>` controls CGU-level optimization.
+- `-Z fn-opt-levels=<path>` controls per-function LLVM attributes.
+- `-Z hot-cold-split` remains enabled for size reduction.
+- `src/tools/generate_opt_levels.py` generates the optimization maps from PGO counts.
+- `optimize-rustc.sh` is the rustc-specific train -> merge -> regenerate -> rebuild flow.
+- `optimize-project.sh` captures PGO for a generic Cargo/Rust project.
 
-- **Performance:** Fast and memory-efficient, suitable for critical services, embedded devices, and easily integrated with other languages.
+## Usage
+### Build the optimized compiler locally
+```bash
+./optimize-rustc.sh \
+  --workdir /path/to/project \
+  --train-cmd 'cargo build --release'
+```
 
-- **Reliability:** Our rich type system and ownership model ensure memory and thread safety, reducing bugs at compile-time.
+### Rebuild rustc with the saved lists
+```bash
+RUSTFLAGS_NOT_BOOTSTRAP="-Z hot-cold-split \
+  -Z cgu-opt-levels=build/pgo_data/cgu_opt_levels.txt \
+  -Z fn-opt-levels=build/pgo_data/fn_opt_levels.txt" \
+python3 x.py build --stage 2 compiler/rustc library/std
+```
+### Build the current directory with PGSO
+```bash
+cd /path/to/project
+../rustc/optimize-project.sh --train-cmd './benchmark --bench'
+```
 
-- **Productivity:** Comprehensive documentation, a compiler committed to providing great diagnostics, and advanced tooling including package manager and build tool ([Cargo]), auto-formatter ([rustfmt]), linter ([Clippy]) and editor support ([rust-analyzer]).
+### Release workflow
+- `.github/workflows/optimized-rustc-release.yml`
 
-[Cargo]: https://github.com/rust-lang/cargo
-[rustfmt]: https://github.com/rust-lang/rustfmt
-[Clippy]: https://github.com/rust-lang/rust-clippy
-[rust-analyzer]: https://github.com/rust-lang/rust-analyzer
+## Benchmarks
+I haven't made much effort to make the benchmarks accurate yet, but they *might* give a rough guide.
 
-## Quick Start
+See [CGU\_TIERING\_ANALYSIS.md](CGU_TIERING_ANALYSIS.md) for:
+- binary size comparison
+- serde\_json + benchtool timing results
+- stock 1.96.1 stdlib compatibility notes
 
-Read ["Installation"] from [The Book].
-
-["Installation"]: https://doc.rust-lang.org/book/ch01-01-installation.html
-[The Book]: https://doc.rust-lang.org/book/index.html
-
-## Installing from Source
-
-If you really want to install from source (though this is not recommended), see
-[INSTALL.md](INSTALL.md).
-
-## Getting Help
-
-See https://www.rust-lang.org/community for a list of chat platforms and forums.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-For a detailed explanation of the compiler's architecture and how to begin contributing, see the [rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/).
-
-## License
-
-Rust is primarily distributed under the terms of both the MIT license and the
-Apache License (Version 2.0), with portions covered by various BSD-like
-licenses.
-
-See [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT), and
-[COPYRIGHT](COPYRIGHT) for details.
-
-## Trademark
-
-[The Rust Foundation][rust-foundation] owns and protects the Rust and Cargo
-trademarks and logos (the "Rust Trademarks").
-
-If you want to use these names or brands, please read the
-[Rust language trademark policy][trademark-policy].
-
-Third-party logos may be subject to third-party copyrights and trademarks. See
-[Licenses][policies-licenses] for details.
-
-[rust-foundation]: https://rustfoundation.org/
-[trademark-policy]: https://rustfoundation.org/policy/rust-trademark-policy/
-[policies-licenses]: https://www.rust-lang.org/policies/licenses
+## Docs
+- [CGU\_TIERING\_ANALYSIS.md](CGU_TIERING_ANALYSIS.md)
+- [GENERIC\_PGO\_WRAPPER\_PLAN.md](GENERIC_PGO_WRAPPER_PLAN.md)
+- [optimize-project.sh](optimize-project.sh)
+- [optimize-rustc.sh](optimize-rustc.sh)

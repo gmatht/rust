@@ -15,6 +15,9 @@ Profiles a Cargo/Rust project by running the supplied training command with
 Rust PGO enabled, then merges the resulting profiles and writes function block
 counts in the same format as `generate_opt_levels.py` expects.
 
+The training command should be a benchmark or other representative workload,
+not just a plain build.
+
 `--train-cmd` is mandatory.
 `--workdir` defaults to `.` and should point at the project root.
 Any arguments after `--` are appended to the training command.

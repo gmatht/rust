@@ -13,8 +13,6 @@ Goal: make `optimize-rustc.sh` work on arbitrary Cargo or Rust projects by accep
 1. Build instrumented compiler
 2. Run the supplied command under the instrumented compiler from the project root (`Cargo.toml` lives there)
 3. Merge `.profraw` files with `llvm-profdata`
-4. Extract counts and generate opt-level lists
-5. Rebuild optimized compiler
-
-## Open issue
-- The repo still needs a stable extractor from LLVM PGO data to the `function_counts.txt` format expected by `generate_opt_levels.py`.
+4. Emit `function_counts.txt` with `-Z function-block-counts`
+5. Generate opt-level lists from that counts file
+6. Rebuild optimized compiler
