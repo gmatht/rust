@@ -19,7 +19,7 @@ use crate::llvm::{
     self, AllocKindFlags, Attribute, AttributeKind, AttributePlace, MemoryEffects, Value,
 };
 
-use rustc_data_structures::fx::FxHashSet;
+use rustc_data_structures::fx::FxHashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
@@ -613,38 +613,38 @@ pub(crate) fn llfn_attrs_from_instance<'ll, 'tcx>(
 
     to_add.extend(target_features_attr(cx, tcx, function_features));
 
-    // PGO-driven per-function optimization: if hot-cold-split is enabled, cold
-    // functions from the LOCAL crate get minsize+optsize LLVM attributes to
-    // reduce code size within an O3 CGU.  Tepid functions get optsize only.
-    // Dependency crate functions (core, alloc, std) are left at full O3 speed.
+    // Per-function opt levels from -Z fn-opt-levels=<file>.
+    // The file maps function symbols to O3/O2/Os/Oz.
+    // Functions not listed get Oz (cold by default: minsize+optsize+cold).
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(instance) = instance {
-            let def_id = instance.def_id();
-            if !def_id.is_local() {
-                // Skip dep crate functions — they need full O3 speed,
-                // especially when called from hot code paths.
-            } else {
+            if let Some(ref opt_path) = tcx.sess.opts.unstable_opts.fn_opt_levels {
+                let mut opt_map = FN_OPT_MAP.lock().unwrap();
+                if opt_map.0.as_ref().map_or(true, |p| p != opt_path) {
+                    opt_map.0 = Some(opt_path.clone());
+                    opt_map.1 = read_fn_opt_levels(opt_path, tcx.sess);
+                }
+
+                let def_id = instance.def_id();
                 let fn_name = with_no_trimmed_paths!(tcx.def_path_str(def_id));
                 let crate_name = tcx.crate_name(def_id.krate);
                 let crate_prefixed = format!("{}::{}", crate_name, fn_name);
 
-                let hot_guard = read_func_list_once(
-                    tcx.sess.opts.unstable_opts.hot_function_list.as_deref(),
-                    &HOT_LIST_CACHE,
-                );
-                let tepid_guard = read_func_list_once(
-                    tcx.sess.opts.unstable_opts.tepid_function_list.as_deref(),
-                    &TEPID_LIST_CACHE,
-                );
+                let opt = opt_map.1.get(&fn_name)
+                    .or_else(|| opt_map.1.get(&crate_prefixed))
+                    .copied()
+                    .unwrap_or(OptLevel::SizeMin);
 
-                let is_hot = hot_guard.1.contains(&fn_name) || hot_guard.1.contains(&crate_prefixed);
-                let is_tepid = tepid_guard.1.contains(&fn_name) || tepid_guard.1.contains(&crate_prefixed);
-
-                if !is_hot && !is_tepid {
-                    to_add.push(AttributeKind::MinSize.create_attr(cx.llcx));
-                    to_add.push(AttributeKind::OptimizeForSize.create_attr(cx.llcx));
-                } else if is_tepid && !is_hot {
-                    to_add.push(AttributeKind::OptimizeForSize.create_attr(cx.llcx));
+                match opt {
+                    OptLevel::SizeMin => {
+                        to_add.push(AttributeKind::Cold.create_attr(cx.llcx));
+                        to_add.push(AttributeKind::MinSize.create_attr(cx.llcx));
+                        to_add.push(AttributeKind::OptimizeForSize.create_attr(cx.llcx));
+                    }
+                    OptLevel::Size => {
+                        to_add.push(AttributeKind::OptimizeForSize.create_attr(cx.llcx));
+                    }
+                    OptLevel::More | OptLevel::Aggressive | OptLevel::No | OptLevel::Less => {}
                 }
             }
         }
@@ -653,38 +653,47 @@ pub(crate) fn llfn_attrs_from_instance<'ll, 'tcx>(
     attributes::apply_to_llfn(llfn, Function, &to_add);
 }
 
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
-static HOT_LIST_CACHE: OnceLock<Mutex<(std::path::PathBuf, FxHashSet<String>)>> = OnceLock::new();
-static TEPID_LIST_CACHE: OnceLock<Mutex<(std::path::PathBuf, FxHashSet<String>)>> = OnceLock::new();
+static FN_OPT_MAP: LazyLock<Mutex<(Option<std::path::PathBuf>, FxHashMap<String, OptLevel>)>> =
+    LazyLock::new(|| Mutex::new((None, FxHashMap::default())));
 
-fn read_func_list_once<'a>(
-    path: Option<&'a std::path::Path>,
-    cache: &'a OnceLock<Mutex<(std::path::PathBuf, FxHashSet<String>)>>,
-) -> std::sync::MutexGuard<'a, (std::path::PathBuf, FxHashSet<String>)> {
-    let mut guard = cache.get_or_init(|| Mutex::new((std::path::PathBuf::new(), FxHashSet::default()))).lock().unwrap();
-    if let Some(p) = path {
-        if guard.0 != p {
-            guard.0 = p.to_path_buf();
-            guard.1 = read_func_list_file(p);
-        }
-    }
-    guard
-}
-
-fn read_func_list_file(path: &std::path::Path) -> FxHashSet<String> {
+fn read_fn_opt_levels(
+    path: &std::path::Path,
+    sess: &Session,
+) -> FxHashMap<String, OptLevel> {
     let file = match File::open(path) {
         Ok(f) => f,
-        Err(_) => return FxHashSet::default(),
+        Err(e) => {
+            sess.dcx().warn(format!("failed to open fn_opt_levels file '{}': {}", path.display(), e));
+            return FxHashMap::default();
+        }
     };
-    BufReader::new(file)
-        .lines()
-        .filter_map(|line| {
-            let l = line.ok()?;
-            let t = l.trim();
-            if t.is_empty() || t.starts_with('#') { None } else { Some(t.to_owned()) }
-        })
-        .collect()
+    let mut map = FxHashMap::default();
+    for (lineno, line) in BufReader::new(file).lines().enumerate() {
+        let l = match line { Ok(l) => l, Err(_) => continue };
+        let t = l.trim().to_owned();
+        if t.is_empty() || t.starts_with('#') { continue; }
+        let parts: Vec<&str> = t.split_whitespace().collect();
+        if parts.len() < 2 {
+            sess.dcx().warn(format!("fn_opt_levels:{}: expected 'name O3|O2|Os|Oz', got '{}'", lineno + 1, t));
+            continue;
+        }
+        let name = parts[..parts.len() - 1].join(" ");
+        let opt_str = parts[parts.len() - 1];
+        let opt = match opt_str {
+            "O3" => OptLevel::Aggressive,
+            "O2" => OptLevel::More,
+            "Os" => OptLevel::Size,
+            "Oz" => OptLevel::SizeMin,
+            _ => {
+                sess.dcx().warn(format!("fn_opt_levels:{}: unknown opt level '{}', expected O3|O2|Os|Oz", lineno + 1, opt_str));
+                continue;
+            }
+        };
+        map.insert(name, opt);
+    }
+    map
 }
 
 fn wasm_import_module(tcx: TyCtxt<'_>, id: DefId) -> Option<&String> {

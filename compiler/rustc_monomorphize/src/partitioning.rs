@@ -98,7 +98,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use rustc_data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet};
+use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use rustc_data_structures::sync::par_join;
 use rustc_data_structures::unord::{UnordMap, UnordSet};
 use rustc_hir::LangItem;
@@ -117,6 +117,7 @@ use rustc_session::config::OptLevel;
 use rustc_middle::ty::print::{characteristic_def_id_of_type, with_no_trimmed_paths};
 use rustc_middle::ty::{self, InstanceKind, TyCtxt};
 use rustc_middle::util::Providers;
+use rustc_session::Session;
 use rustc_session::CodegenUnits;
 use rustc_session::config::{DumpMonoStatsFormat, SwitchWithOptPath, set_per_cgu_opt_level};
 use rustc_span::Symbol;
@@ -172,53 +173,31 @@ where
         debug_dump(tcx, "MERGE", &codegen_units);
     }
 
-    // Hot/cold split: when -Z hot-cold-split is enabled, set per-CGU
-    // opt-level based on the hot function list, stored in a side channel
-    // for ThinLTO post-link use (lto.rs::run_pass_manager).
+    // CGU-level optimization from -Z cgu-opt-levels=<file>.
+    // The file maps CGU names (prefix match) to O3/O2/Os/Oz.
+    // CGUs not listed keep their default opt level (O3 in release).
     //
-    // IMPORTANT: We do NOT split CGUs — mixed CGUs (containing both hot
-    // and cold items) stay as one module to avoid increasing the number
-    // of object files (each .rcgu.o has ELF header/symbol-table overhead).
-    // PGO profile-use in Phase 2 provides function-level hot/cold annotation
-    // to LLVM's optimizer, which makes per-function decisions within the
-    // module.
-    //
-    // Cold-only CGUs get SizeMin pre-link (smaller base IR via
-    // cgu.set_opt_level) and SizeMin post-link (via the side channel).
-    // Mixed CGUs stay at the global opt-level pre-link (for PGO hash
-    // matching between Phase 1 and Phase 2) and More (O2) post-link
-    // (via the side channel).  O2 provides a good balance of speed and
-    // code size for hot functions — nearly as fast as O3 but with
-    // less code bloat from excessive inlining and loop unrolling.
-    // Hot-only CGUs get More (O2) post-link via the side channel.
+    // The per-CGU opt level is set both pre-link (cgu.set_opt_level) and
+    // stored in the side channel for ThinLTO post-link (lto.rs).
     if tcx.sess.opts.unstable_opts.hot_cold_split {
-        if let Some(ref hot_func_path) = tcx.sess.opts.unstable_opts.hot_function_list {
-            let hot_funcs = read_hot_function_list(hot_func_path);
-            let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
-
+        if let Some(ref opt_path) = tcx.sess.opts.unstable_opts.cgu_opt_levels {
+            let opt_map = read_cgu_opt_levels(opt_path, tcx.sess);
             for cgu in codegen_units.iter_mut() {
-                let mut any_hot = false;
-                let mut any_cold = false;
-
-                for (item, _data) in cgu.items().iter() {
-                    let item_name = with_no_trimmed_paths!(tcx.def_path_str(item.def_id()));
-                    let crate_prefixed = format!("{}::{}", crate_name, item_name);
-                    let sym_name = item.symbol_name(tcx).name;
-                    if hot_funcs.contains(&item_name)
-                        || hot_funcs.contains(&crate_prefixed)
-                        || hot_funcs.contains(sym_name)
-                    {
-                        any_hot = true;
-                    } else {
-                        any_cold = true;
-                    }
+                let cgu_name = cgu.name().as_str().to_string();
+                if let Some(opt_level) = opt_map.iter()
+                    .find(|(key, _)| cgu_name.starts_with(key.as_str()))
+                    .map(|(_, opt)| *opt)
+                {
+                    cgu.set_opt_level(Some(opt_level));
+                    set_per_cgu_opt_level(cgu.name().as_str(), opt_level);
                 }
-
-                if any_cold && !any_hot {
-                    cgu.set_opt_level(Some(OptLevel::SizeMin));
-                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::SizeMin);
-                } else if any_hot {
-                    set_per_cgu_opt_level(cgu.name().as_str(), OptLevel::Aggressive);
+            }
+            // Warn about entries in the file that didn't match any CGU.
+            for (key, opt) in &opt_map {
+                if !codegen_units.iter().any(|cgu| cgu.name().as_str().starts_with(key.as_str())) {
+                    tcx.sess.dcx().warn(format!(
+                        "cgu_opt_levels: entry '{key} {}' did not match any CGU", opt_level_str(*opt)
+                    ));
                 }
             }
         }
@@ -1364,27 +1343,57 @@ fn dump_mono_items_stats<'tcx>(
     Ok(())
 }
 
-/// Read the hot function list file produced by the PGO profile analysis in
-/// cargo-autosplit.sh. The file contains one function symbol name per line.
-/// Returns an empty `HashSet` if the file cannot be read or doesn't exist.
-fn read_hot_function_list(path: &Path) -> FxHashSet<String> {
+fn opt_level_str(opt: OptLevel) -> &'static str {
+    match opt {
+        OptLevel::No => "O0",
+        OptLevel::Less => "O1",
+        OptLevel::More => "O2",
+        OptLevel::Aggressive => "O3",
+        OptLevel::Size => "Os",
+        OptLevel::SizeMin => "Oz",
+    }
+}
+
+/// Read the CGU opt-level file. Each non-empty, non-comment line is
+/// `cgu_name O3|O2|Os|Oz`.  CGU names are matched by prefix.
+fn read_cgu_opt_levels(path: &Path, sess: &Session) -> Vec<(String, OptLevel)> {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            debug!("hot-cold-split: could not open hot function list '{}': {}", path.display(), e);
-            return FxHashSet::default();
+            sess.dcx().warn(format!("failed to open cgu_opt_levels file '{}': {}", path.display(), e));
+            return Vec::new();
         }
     };
-    let reader = BufReader::new(file);
-    reader.lines().filter_map(|line| {
-        let line = line.ok()?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            None
-        } else {
-            Some(trimmed.to_string())
+    let mut entries = Vec::new();
+    for (lineno, line) in BufReader::new(file).lines().enumerate() {
+        let l = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let t = l.trim().to_owned();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
         }
-    }).collect()
+        let parts: Vec<&str> = t.split_whitespace().collect();
+        if parts.len() < 2 {
+            sess.dcx().warn(format!("cgu_opt_levels:{}: expected 'name O3|O2|Os|Oz', got '{}'", lineno + 1, t));
+            continue;
+        }
+        let name = parts[..parts.len() - 1].join(" ");
+        let opt_str = parts[parts.len() - 1];
+        let opt = match opt_str {
+            "O3" => OptLevel::Aggressive,
+            "O2" => OptLevel::More,
+            "Os" => OptLevel::Size,
+            "Oz" => OptLevel::SizeMin,
+            _ => {
+                sess.dcx().warn(format!("cgu_opt_levels:{}: unknown opt level '{}', expected O3|O2|Os|Oz", lineno + 1, opt_str));
+                continue;
+            }
+        };
+        entries.push((name, opt));
+    }
+    entries
 }
 
 pub(crate) fn provide(providers: &mut Providers) {
