@@ -1,0 +1,47 @@
+name: Optimized Rustc Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+            host: x86_64-unknown-linux-gnu
+            python: python3
+          - name: macos-x86_64
+            runner: macos-13
+            host: x86_64-apple-darwin
+            python: python3
+          - name: macos-aarch64
+            runner: macos-14
+            host: aarch64-apple-darwin
+            python: python3
+          - name: windows-x86_64
+            runner: windows-2022
+            host: x86_64-pc-windows-msvc
+            python: python
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+
+      - name: Build optimized stage2 compiler
+        env:
+          RUSTFLAGS_NOT_BOOTSTRAP: -Z hot-cold-split -Z cgu-opt-levels=build/pgo_data/cgu_opt_levels.txt -Z fn-opt-levels=build/pgo_data/fn_opt_levels.txt
+        run: ${{ matrix.python }} x.py build --stage 2 library/std compiler/rustc --host ${{ matrix.host }}
+
+      - name: Upload stage2 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: optimized-rustc-${{ matrix.name }}
+          path: build/${{ matrix.host }}/stage2
+          if-no-files-found: error

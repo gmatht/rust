@@ -1,4 +1,4 @@
-# CGU Tiering + PGSO — rustc 1.96.0-dev
+# CGU Tiering + PGSO — rustc 1.96.1
 
 ## Architecture
 
@@ -54,6 +54,24 @@ Benchmark: `cargo build --release -j1` of serde\_json + benchtool (3 runs)
 | Stage2 + fn-opt-levels | 10.2s | **-10%** | **-28%** |
 
 The per-function optimization (`fn-opt-levels`) adds a clear ~10% improvement over the baseline stage2. Cold functions in hot CGUs get size-reducing LLVM attrs, reducing code bloat and improving I-cache.
+
+## Release compatibility
+
+Important: matching `src/version` to `1.96.1` is not enough to use the stock 1.96.1 standard library.
+
+- Stock stdlib was built by `rustc 1.96.1 (31fca3adb 2026-06-26)`
+- This tree builds `rustc 1.96.1 (39f88c0c3 2026-07-03)`
+- `cargo` with the stock sysroot still fails with `E0514` because the crate metadata hashes differ
+
+Implication: we should not promise compatibility with the shipped stdlib unless we rebuild on the exact release commit. Shipping only the compiler and requiring `-Z build-std` is viable, but stock prebuilt stdlib is not.
+
+### Measured binary size
+
+- Stock 1.96.1 `librustc_driver.so`: 151,572,320 bytes
+- This tree's stage1 `librustc_driver.so`: 92,304,128 bytes
+- This tree's stage2 `librustc_driver.so`: 72,069,856 bytes
+
+So the customized compiler payload is substantially smaller than stock 1.96.1.
 
 ## Usage
 
