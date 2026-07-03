@@ -2,9 +2,6 @@
 
 Fork of Rust with file-driven CGU tiering and per-function optimization levels.
 
-../rustc/optimize-project.sh --train-cmd './benchmark --bench'
-(Where ./benchmark is the charactaristic workload you want to use for profiling)
-
 ## Purpose
 The purpose of this is to make hot code fast and cold code small in rust projects.
 - without hand-editing component crates

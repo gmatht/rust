@@ -596,12 +596,12 @@ pub(crate) fn run_pass_manager(
     // during ThinLTO post-link only.
     //
     // The side channel is process-local — it only contains CGU entries for
-    // the crate currently being compiled.  Dependency-crate CGUs compiled
+    // the crate currently being compiled. Dependency-crate CGUs compiled
     // in separate rustc invocations had their own side channels that are now
     // gone.
     //
     // When no per-CGU opt-level is found (dependency CGUs), fall back to
-    // SizeMin.  Dependency CGUs were partitioned with the same hot-function
+    // SizeMin. Dependency CGUs were partitioned with the same hot-function
     // list and since no hot functions match dependency crate prefixes, all
     // dependency CGUs are classified as cold-only, getting SizeMin pre-link.
     // Using SizeMin post-link for the fallback keeps them at SizeMin overall,

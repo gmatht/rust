@@ -1355,7 +1355,7 @@ fn opt_level_str(opt: OptLevel) -> &'static str {
 }
 
 /// Read the CGU opt-level file. Each non-empty, non-comment line is
-/// `cgu_name O3|O2|Os|Oz`.  CGU names are matched by prefix.
+/// `cgu_name O3|O2|Os|Oz`. CGU names are matched by prefix.
 fn read_cgu_opt_levels(path: &Path, sess: &Session) -> Vec<(String, OptLevel)> {
     let file = match File::open(path) {
         Ok(f) => f,
