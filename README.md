@@ -1,6 +1,8 @@
 # rustc PGSO (Profile Guided Size Optimisation) Fork
 
 Fork of Rust with file-driven CGU tiering and per-function optimization levels.
+Generally there is much more cold code than hot code and hot code dominates speed.
+It may result in roughly halving your binary size without affecting speed much.
 
 ## Quick start (one-liner — profiles your project)
 ```bash
@@ -11,9 +13,17 @@ This profiles your project with PGO, generates opt-level lists, then rebuilds
 with PGSO applied. The resulting binary has hot code optimized for speed and
 cold code optimized for size.
 
-**Note:** Always use `--train-cmd`. Running without it compiles with the
-pre-optimized PGSO compiler (which only speeds up the compiler itself, not
-your project binary).
+## Caveats
+- This is my first attempt at modifying rust. I may have broken something important
+- This is just a prototype
+    - I have made no effort to make this code maintainable or conformant to rust coding guidlines.
+    - Don't submit a pull request to upstream Rust!
+I am not sure this is even needed any more. Splitting CGUs is generally bad for size
+Spliting the CGUs into hot and cold seems to balance out and only give trivial size performance gains.
+So, we tend to only have one CGU per crate and per-CGU optimisation levels become just per crate
+optimisation levels. And per crate optimisation levels can already be done with Cargo?
+And upstream seems to already have some kind of per-function optimisation level? 
+
 
 ## Purpose
 The purpose of this is to make hot code fast and cold code small in rust projects.
