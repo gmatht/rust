@@ -3,7 +3,7 @@ set -euo pipefail
 
 NAME="pgso-almalinux8"
 TOOLCHAIN_DIR="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$NAME"
-BASE_URL="https://github.com/gmatht/rust/raw/stable-pgso/dist"
+BASE_URL="https://github.com/gmatht/rust/releases/download/v1.96.1-pgso"
 TARBALL="$NAME.tar.gz"
 
 # Ensure toolchain is installed
