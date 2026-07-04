@@ -2,16 +2,19 @@
 
 Fork of Rust with file-driven CGU tiering and per-function optimization levels.
 
-## Quick start (one-liner)
+## Quick start (one-liner — profiles your project)
 ```bash
-curl -sL https://github.com/gmatht/rust/raw/stable-pgso/optimize-project.sh | bash -s -- +pgso-almalinux8 -Z build-std build --release
+curl -sL https://github.com/gmatht/rust/raw/stable-pgso/optimize-project.sh | bash -s -- --train-cmd 'cargo build --release'
 ```
 
-**Note:** The PGSO compiler is a nightly toolchain and requires `-Z build-std`
-to build the standard library from source alongside your project. This is
-necessary to get properly profiled standard library code — bundling a
-pre-optimized stdlib would optimize it for rustc's hot/cold patterns, not yours.
-Always pass `-Z build-std` when using this toolchain.
+This profiles your project with PGO, generates opt-level lists, then rebuilds
+with PGSO applied. The resulting binary has hot code optimized for speed and
+cold code optimized for size.
+
+**Note:** Always use `--train-cmd`. Running without it compiles with the
+pre-optimized PGSO compiler (which only speeds up the compiler itself, not
+your project binary).
+
 ## Purpose
 The purpose of this is to make hot code fast and cold code small in rust projects.
 - without hand-editing component crates
@@ -49,7 +52,7 @@ cd /path/to/project
 
 ### Use the PGSO compiler for your own project
 ```bash
-./optimize-project.sh +pgso-almalinux8 -Z build-std build --release
+./optimize-project.sh --train-cmd 'cargo build --release'
 ```
 
 ### Build Linux and Win64 binaries
