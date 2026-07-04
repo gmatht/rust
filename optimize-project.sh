@@ -9,7 +9,7 @@ TARBALL="release-almalinux8.tar.gz"
 STOCK_TC="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/1.96.1-x86_64-unknown-linux-gnu"
 NIGHTLY_TC="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/nightly-x86_64-unknown-linux-gnu"
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+GEN_SCRIPT="$TC_DIR/share/generate_opt_levels.py"
 
 ensure_stock() {
     if [[ ! -x "$STOCK_TC/bin/rustc" ]]; then
@@ -113,7 +113,7 @@ if [[ $# -ge 1 && "$1" == "--train-cmd" ]]; then
     shift || true
     WORKDIR="${1:-.}"
     shift 2>/dev/null || true
-    OUT_DIR="$ROOT/saved/optimized_project"
+    OUT_DIR="$WORKDIR/saved/optimized_project"
     PGO_DIR="$OUT_DIR/pgo"
     TRAIN_DIR="$OUT_DIR/train"
     mkdir -p "$PGO_DIR" "$TRAIN_DIR"
@@ -136,7 +136,7 @@ if [[ $# -ge 1 && "$1" == "--train-cmd" ]]; then
     LD_LIBRARY_PATH="$TC_DIR/lib:$LD_LIBRARY_PATH" \
         "$llvm_profdata" merge -o "$OUT_DIR/merged.profdata" "${profiles[@]}"
     echo "[3/4] Generating opt-level lists"
-    python3 "$ROOT/src/tools/generate_opt_levels.py" --profdata "$OUT_DIR/merged.profdata" --llvm-profdata "$llvm_profdata"
+    python3 "$GEN_SCRIPT" --profdata "$OUT_DIR/merged.profdata" --llvm-profdata "$llvm_profdata"
     cp /tmp/cgu_opt_levels.txt "$OUT_DIR/cgu_opt_levels.txt" 2>/dev/null || true
     cp /tmp/fn_opt_levels.txt "$OUT_DIR/fn_opt_levels.txt" 2>/dev/null || true
     echo "[4/4] Rebuilding with PGO + PGSO"

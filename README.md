@@ -16,6 +16,22 @@ This profiles your project with PGO, generates opt-level lists, then rebuilds
 with PGSO applied. The resulting binary has hot code optimized for speed and
 cold code optimized for size.
 
+### How `--train-cmd` works
+
+The script sets `RUSTFLAGS=-Cprofile-generate=<dir>` in the environment before
+running your command. Any `cargo build` inside your command inherits this flag,
+producing an instrumented binary. Running that binary writes `.profraw` files
+to the output directory.
+
+**Important:** Your training command must respect `RUSTFLAGS` from the
+environment. Tools that override `RUSTFLAGS` (e.g. `cargo pgo`) will break
+instrumentation. The safe pattern is a plain `cargo build --release`.
+
+After training, the script:
+1. Merges `.profraw` into a `.profdata` profile
+2. Extracts function hotness from the profile to generate opt-level lists
+3. Rebuilds with `-Cprofile-use`, `-Z cgu-opt-levels`, `-Z fn-opt-levels`
+
 ## Caveats
 - This is my first attempt at modifying rustc. I may have broken something important
 - This is just a prototype
