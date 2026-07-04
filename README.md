@@ -30,11 +30,11 @@ The purpose of this is to make hot code fast and cold code small in rust project
 - `optimize-project.sh` captures PGO for a generic Cargo/Rust project.
 
 ## Usage
-### Build the optimized compiler locally
+### Build the optimized rustc compiler locally
 ```bash
 ./optimize-rustc.sh \
   --workdir /path/to/project \
-  --train-cmd 'YOUR_BENCHMARK --YOUR_OPTIONS'
+  --train-cmd 'cargo build --release'
 ```
 
 ### Rebuild rustc with the saved lists
@@ -52,7 +52,7 @@ cd /path/to/project
 
 ### Use the PGSO compiler for your own project
 ```bash
-./optimize-project.sh --train-cmd 'cargo build --release'
+./optimize-project.sh --train-cmd 'YOUR_BENCHMARK --YOUR_OPTIONS'
 ```
 
 ### Build Linux and Win64 binaries
