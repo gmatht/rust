@@ -149,7 +149,7 @@ if [[ $# -ge 1 && "$1" == "--train-cmd" ]]; then
     pushd "$WORKDIR" >/dev/null
     abs_out="$(cd "$OUT_DIR" && pwd)"
     RUSTC="$TC_DIR/bin/rustc" \
-    RUSTFLAGS="-Cprofile-use=$abs_out/merged.profdata -Z cgu-opt-levels=$abs_out/cgu_opt_levels.txt -Z fn-opt-levels=$abs_out/fn_opt_levels.txt" \
+    RUSTFLAGS="-Cprofile-use=$abs_out/merged.profdata -Z hot-cold-split -Z cgu-opt-levels=$abs_out/cgu_opt_levels.txt -Z fn-opt-levels=$abs_out/fn_opt_levels.txt" \
         cargo "+$TOOLCHAIN_NAME" build --release \
         >"$TRAIN_DIR/rebuild.stdout" 2>"$TRAIN_DIR/rebuild.stderr"
     popd >/dev/null

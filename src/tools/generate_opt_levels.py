@@ -34,8 +34,9 @@ def extract_counts(profdata_path):
             match = re.findall(r"\d+", line)
             total = sum(int(x) for x in match)
             if total > 0:
-                # Demangle the function name
-                demangled = demangle(current_func)
+                # Strip CGU prefix (e.g. "corro.219e2ace-cgu.0;") leaving the mangled symbol
+                mangled = current_func.split(";", 1)[-1] if ";" in current_func else current_func
+                demangled = demangle(mangled)
                 if demangled and demangled not in counts:
                     counts[demangled] = total
             current_func = None
