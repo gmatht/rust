@@ -68,25 +68,25 @@ if [[ "${1:-}" == "--train-cmd" ]]; then
     OUT_DIR="$ROOT/saved/optimized_project"
     PGO_DIR="$OUT_DIR/pgo"
     TRAIN_DIR="$OUT_DIR/train"
-    COUNTS_FILE="$PGO_DIR/function_counts.txt"
     mkdir -p "$PGO_DIR" "$TRAIN_DIR"
     printf '%s\n' "$TRAIN_CMD" > "$TRAIN_DIR/train.cmd"
-    echo "[1/2] Running training command"
+    echo "[1/3] Running training command"
     pushd "$WORKDIR" >/dev/null
     RUSTC="$TOOLCHAIN_DIR/bin/rustc" CARGO="cargo +$TOOLCHAIN_NAME" \
-    RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=$PGO_DIR -Zfunction-block-counts=$COUNTS_FILE" \
+    RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=$PGO_DIR" \
         bash -lc "$TRAIN_CMD" \
         >"$TRAIN_DIR/train.stdout" 2>"$TRAIN_DIR/train.stderr"
     popd >/dev/null
-    echo "[2/2] Merging profiles"
+    echo "[2/3] Merging profiles"
     llvm_profdata="$(command -v llvm-profdata || true)"
     if [[ -z "$llvm_profdata" ]]; then
-        llvm_profdata="$TOOLCHAIN_DIR/lib/llvm-bin/bin/llvm-profdata"
+        llvm_profdata=$(find /root/.rustup/toolchains/ -name llvm-profdata 2>/dev/null | head -1)
         [[ -x "$llvm_profdata" ]] || { echo "llvm-profdata not found" >&2; exit 1; }
     fi
     profiles=("$PGO_DIR"/*.profraw)
     "$llvm_profdata" merge -o "$OUT_DIR/merged.profdata" "${profiles[@]}"
-    [[ -s "$COUNTS_FILE" ]] || { echo "function_counts.txt not written" >&2; exit 1; }
+    echo "[3/3] Generating opt-level lists"
+    python3 "$ROOT/src/tools/generate_opt_levels.py" --profdata "$OUT_DIR/merged.profdata" --llvm-profdata "$llvm_profdata"
     echo "saved to $OUT_DIR"
     exit 0
 fi
