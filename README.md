@@ -3,6 +3,9 @@
 Fork of Rust with file-driven CGU tiering and per-function optimization levels.
 Generally there is much more cold code than hot code and hot code dominates speed.
 It may result in roughly halving your binary size without affecting speed much.
+In some cases I have seen it improve speed too (though some of my benchmarks seem
+to give results that are too good to be true, I would take some of them with a grain
+of salt, I'll need to double check that they are measuring what I think they are).
 
 ## Quick start (one-liner — profiles your project)
 ```bash
@@ -14,7 +17,7 @@ with PGSO applied. The resulting binary has hot code optimized for speed and
 cold code optimized for size.
 
 ## Caveats
-- This is my first attempt at modifying rust. I may have broken something important
+- This is my first attempt at modifying rustc. I may have broken something important
 - This is just a prototype
     - I have made no effort to make this code maintainable or conformant to rust coding guidlines.
     - Don't submit a pull request to upstream Rust!
@@ -80,6 +83,7 @@ WINDOWS_BUILD_DIR=/mnt/d/tmp/rust-pgso-win64-build \
 ### Build on AlmaLinux 8 (GLIBC 2.28, wide Linux compatibility)
 ```bash
 ./build-in-centos7.sh  # works on AlmaLinux 8 WSL
+# Ironically doesn't work on centos7.
 ```
 
 ### Release workflow
