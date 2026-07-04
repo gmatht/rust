@@ -49,13 +49,14 @@ ensure_toolchain() {
         fi
     done
 
-    # Copy host stdlib for build scripts
+    # Copy host stdlib from tarball (needed for build scripts)
     if [[ -d "$EXTRACT/lib/rustlib/x86_64-unknown-linux-gnu" ]]; then
         cp -r "$EXTRACT/lib/rustlib/x86_64-unknown-linux-gnu" "$TOOLCHAIN_DIR/lib/rustlib/"
     fi
     rm -rf "$EXTRACT"
 
-    # Symlink rust-src from stock 1.96.1 for -Z build-std
+    # Ensure stock 1.96.1 has rust-src for -Z build-std
+    rustup component add rust-src --toolchain "$(basename "$STOCK_TC")" 2>/dev/null || true
     ln -sfn "$STOCK_TC/lib/rustlib/src" "$TOOLCHAIN_DIR/lib/rustlib/src"
 
     # Symlink LLVM and cargo from stock
@@ -66,6 +67,9 @@ ensure_toolchain() {
     fi
     ln -sf "$STOCK_TC/lib/libLLVM-22-rust-1.96.1-stable.so" "$TOOLCHAIN_DIR/lib/"
     ln -sf "$STOCK_TC/lib/libLLVM.so.22.1-rust-1.96.1-stable" "$TOOLCHAIN_DIR/lib/"
+
+    # Link the toolchain so cargo can find it
+    rustup toolchain link "$TOOLCHAIN_NAME" "$TOOLCHAIN_DIR" 2>/dev/null || true
 
     echo "Installed. Use: cargo +$TOOLCHAIN_NAME -Z build-std build --release" >&2
 }
