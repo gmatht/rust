@@ -67,6 +67,11 @@ ensure_toolchain() {
         fi
     fi
 
+    # Copy share/ (generate_opt_levels.py)
+    if [[ -d "$EXTRACT/share" ]]; then
+        cp -r "$EXTRACT/share" "$TC_DIR/"
+    fi
+
     # Copy host stdlib (matching build, needed for build scripts)
     if [[ -d "$EXTRACT/lib/rustlib/x86_64-unknown-linux-gnu" ]]; then
         cp -r "$EXTRACT/lib/rustlib/x86_64-unknown-linux-gnu" "$TC_DIR/lib/rustlib/"
@@ -96,6 +101,7 @@ ensure_toolchain() {
     # Symlink self-contained linker (our rustc was built with lld)
     mkdir -p "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin"
     ln -sf "$STOCK_TC/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld" "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/"
+    rm -rf "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld"
     ln -sfn "$STOCK_TC/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld" "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/"
 
     # Register with rustup (TC_DIR is outside ~/.rustup/toolchains/, no circular symlink)
