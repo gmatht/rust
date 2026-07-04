@@ -4,7 +4,7 @@ set -euo pipefail
 TOOLCHAIN_NAME="pgso-almalinux8"
 TOOLCHAIN_DIR="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN_NAME"
 RELEASE_URL="https://github.com/gmatht/rust/releases/download/v1.96.1-pgso"
-TARBALL="$TOOLCHAIN_NAME.tar.gz"
+TARBALL="release-almalinux8.tar.gz"
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
