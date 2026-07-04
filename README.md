@@ -18,8 +18,8 @@ The purpose of this is to make hot code fast and cold code small in rust project
 
 ## Quick start (install pre-built toolchain)
 ```bash
-./pgso-toolchain.sh     # downloads & installs to ~/.rustup/toolchains/
-cargo +pgso-almalinux8 build --release
+./pgso-toolchain.sh                        # auto-downloads & installs
+./pgso-toolchain.sh cargo build --release   # auto-installs then runs cargo
 ```
 
 ## Usage
