@@ -45,15 +45,43 @@ Replaced:
 
 ## Benchmark results
 
-Benchmark: `cargo build --release -j1` of serde\_json + benchtool (3 runs)
+### serde\_json build speed (retracted)
 
-| Configuration | Time | vs default | vs stock |
-|-------------|------|-----------|----------|
-| Stock 1.96.1 | 14.1s | — | — |
-| Our stage2 (no flags) | 11.4s | — | -19% |
-| Stage2 + fn-opt-levels | 10.2s | **-10%** | **-28%** |
+Earlier benchmarks claimed stock 1.96.1 at 14.1s and PGSO stage2 at 10.2s for a
+serde\_json project build. These numbers could not be reproduced with the
+pre-built AlmaLinux 8 release binary running on a newer GLIBC. The measured
+results on Ubuntu 24.04 (GLIBC 2.39) were:
 
-The per-function optimization (`fn-opt-levels`) adds a clear ~10% improvement over the baseline stage2. Cold functions in hot CGUs get size-reducing LLVM attrs, reducing code bloat and improving I-cache.
+| Configuration | Time (avg 3 runs) |
+|-------------|------------------|
+| Stock 1.96.1 | 17.0s |
+| PGSO release (no flags) | 25.2s |
+| PGSO + rustc's fn-opt-levels | 27.7s |
+
+The PGSO compiler here is the AlmaLinux 8 binary running on a system with
+GLIBC 2.39 — the glibc version mismatch may affect performance. Additionally,
+the bundled `fn_opt_levels.txt` was generated from rustc's own PGO profile;
+applying it to a serde\_json project doesn't match any functions, defaulting
+everything to Oz (cold) which adds overhead without benefit.
+
+The original numbers were from a stage2 compiler built and run on the same
+machine — they should be treated as optimistic.
+
+### Compiler speed benchmark
+
+How fast does each compiler compile a large Cargo project? Both use default
+settings (no PGSO flags), so this measures the compiler itself, not the
+optimization flags.
+
+| Configuration | Time (avg 3 runs, clean build) | vs stock |
+|-------------|------|---------|
+| Stock 1.96.1 | TBD | — |
+| PGSO release | TBD | TBD |
+
+See `scripts/bench-compile.sh` to reproduce. The PGSO compiler is built with
+FatLTO + codegen-units=1, producing a smaller `librustc_driver.so` (69MB vs
+stock 151MB). A smaller binary should improve I-cache behavior and compilation
+speed — the script measures this.
 
 ## Release compatibility
 
