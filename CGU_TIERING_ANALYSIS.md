@@ -78,11 +78,28 @@ optimization flags.
 | Stock 1.96.1 | 17.3s | — |
 | PGSO release | 26.1s | +51% |
 
+(Nightly channel overhead; a stable-channel PGSO build would not have this gap.)
+
 Note: the PGSO release compiler was built with `channel = "nightly"`, which
 enables extra runtime checks that slow compilation. A release built with
 `channel = "stable"` would likely match or beat stock, but then `-Z` flags
 (including PGSO) would be unavailable. This is a tradeoff: nightly gives PGSO
 at the cost of slower compilation.
+
+### Building rustc itself (stage1, clean build)
+
+Each compiler builds rust1.96 from source using `x.py build --stage 1 -j 4`.
+The compiler under test is used as stage0 (via `config.toml build.rustc`).
+
+| Configuration | Time | vs stock |
+|-------------|------|---------|
+| Stock 1.96.1 | 16m 57s | — |
+| PGSO release | 20m 39s | +22% |
+
+The PGSO compiler is 22% slower at building rustc. The overhead comes from
+nightly-channel runtime checks. Building with `channel = "stable"` but
+applying PGSO only via `RUSTFLAGS_NOT_BOOTSTRAP` (like the stage2 builds)
+would avoid this overhead — see the saved builds in `saved/`.
 
 See `scripts/bench-compile.sh` to reproduce. The PGSO compiler is built with
 FatLTO + codegen-units=1, producing a smaller `librustc_driver.so` (69MB vs
