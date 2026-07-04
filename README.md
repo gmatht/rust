@@ -18,7 +18,7 @@ The purpose of this is to make hot code fast and cold code small in rust project
 
 ## Quick start (one-liner)
 ```bash
-curl -sL https://github.com/gmatht/rust/raw/stable-pgso/optimize-project.sh | bash -s -- cargo build --release
+curl -sL https://github.com/gmatht/rust/raw/stable-pgso/optimize-project.sh | bash -s -- --train-cmd YOUR_BENCHMARK_COMMAND cargo build --release 
 ```
 
 ## Usage
