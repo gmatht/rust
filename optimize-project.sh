@@ -102,8 +102,17 @@ if [[ "${1:-}" == "--train-cmd" ]]; then
     fi
     profiles=("$PGO_DIR"/*.profraw)
     "$llvm_profdata" merge -o "$OUT_DIR/merged.profdata" "${profiles[@]}"
-    echo "[3/3] Generating opt-level lists"
+    echo "[3/4] Generating opt-level lists"
     python3 "$ROOT/src/tools/generate_opt_levels.py" --profdata "$OUT_DIR/merged.profdata" --llvm-profdata "$llvm_profdata"
+    cp /tmp/cgu_opt_levels.txt "$OUT_DIR/cgu_opt_levels.txt"
+    cp /tmp/fn_opt_levels.txt "$OUT_DIR/fn_opt_levels.txt"
+    echo "[4/4] Rebuilding with PGO + PGSO"
+    pushd "$WORKDIR" >/dev/null
+    RUSTC="$TOOLCHAIN_DIR/bin/rustc" \
+    RUSTFLAGS="-Cprofile-use=$OUT_DIR/merged.profdata -Z cgu-opt-levels=$OUT_DIR/cgu_opt_levels.txt -Z fn-opt-levels=$OUT_DIR/fn_opt_levels.txt" \
+        cargo "+$TOOLCHAIN_NAME" -Z build-std build --release \
+        >"$TRAIN_DIR/rebuild.stdout" 2>"$TRAIN_DIR/rebuild.stderr"
+    popd >/dev/null
     echo "saved to $OUT_DIR"
     exit 0
 fi
