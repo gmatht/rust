@@ -121,9 +121,10 @@ if [[ $# -ge 1 && "$1" == "--train-cmd" ]]; then
         >"$TRAIN_DIR/train.stdout" 2>"$TRAIN_DIR/train.stderr"
     popd >/dev/null
     echo "[2/3] Merging profiles"
-    llvm_profdata="$(command -v llvm-profdata || true)"
+    # Prefer the toolchain's own llvm-profdata (matches our LLVM version)
+    llvm_profdata=$(find "$TC_DIR" -name llvm-profdata -type f 2>/dev/null | head -1)
     if [[ -z "$llvm_profdata" ]]; then
-        llvm_profdata=$(find "$TC_DIR" -name llvm-profdata 2>/dev/null | head -1)
+        llvm_profdata="$(command -v llvm-profdata || true)"
         [[ -x "$llvm_profdata" ]] || { echo "llvm-profdata not found" >&2; exit 1; }
     fi
     profiles=("$PGO_DIR"/*.profraw)
