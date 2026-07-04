@@ -75,8 +75,14 @@ optimization flags.
 
 | Configuration | Time (avg 3 runs, clean build) | vs stock |
 |-------------|------|---------|
-| Stock 1.96.1 | TBD | — |
-| PGSO release | TBD | TBD |
+| Stock 1.96.1 | 17.3s | — |
+| PGSO release | 26.1s | +51% |
+
+Note: the PGSO release compiler was built with `channel = "nightly"`, which
+enables extra runtime checks that slow compilation. A release built with
+`channel = "stable"` would likely match or beat stock, but then `-Z` flags
+(including PGSO) would be unavailable. This is a tradeoff: nightly gives PGSO
+at the cost of slower compilation.
 
 See `scripts/bench-compile.sh` to reproduce. The PGSO compiler is built with
 FatLTO + codegen-units=1, producing a smaller `librustc_driver.so` (69MB vs
