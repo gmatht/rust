@@ -89,17 +89,25 @@ at the cost of slower compilation.
 ### Building rustc itself (stage1, clean build)
 
 Each compiler builds rust1.96 from source using `x.py build --stage 1 -j 4`.
-The compiler under test is used as stage0 (via `config.toml build.rustc`).
+The compiler under test is used as stage0 (via `--set build.rustc`).
 
-| Configuration | Time | vs stock |
-|-------------|------|---------|
-| Stock 1.96.1 | 16m 57s | — |
-| PGSO release | 20m 39s | +22% |
+| Configuration | Time | vs stock | vs PGSO stable |
+|-------------|------|---------|---------------|
+| Stock 1.96.1 | 88.0s | — | +9.1% |
+| PGSO stable (stage2 built here) | 80.7s | **-8.3%** | — |
+| PGSO nightly (AlmaLinux release) | 106.1s | +20.6% | +31.5% |
 
-The PGSO compiler is 22% slower at building rustc. The overhead comes from
-nightly-channel runtime checks. Building with `channel = "stable"` but
-applying PGSO only via `RUSTFLAGS_NOT_BOOTSTRAP` (like the stage2 builds)
-would avoid this overhead — see the saved builds in `saved/`.
+Key insight: the **PGSO stable** compiler is the fastest — 8% faster than stock.
+It's a stable-channel compiler built with the PGSO opt-level lists applied
+during compilation (`RUSTFLAGS_NOT_BOOTSTRAP`). Its `librustc_driver.so` is
+70MB (vs stock's 151MB), and the smaller binary improves I-cache behavior.
+
+The **PGSO nightly** is slowest because `channel = "nightly"` enables extra
+runtime checks that don't exist in stable builds. This is the tradeoff:
+nightly gives access to `-Z` flags at the cost of compilation speed.
+
+A fully Oz-optimized rustc (`-C opt-level=z` on all crates) would complete
+this comparison but took too long to build to include here.
 
 See `scripts/bench-compile.sh` to reproduce. The PGSO compiler is built with
 FatLTO + codegen-units=1, producing a smaller `librustc_driver.so` (69MB vs
