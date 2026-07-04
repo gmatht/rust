@@ -88,6 +88,11 @@ ensure_toolchain() {
     ln -sf "$STOCK_TC/lib/libLLVM-22-rust-1.96.1-stable.so" "$TC_DIR/lib/"
     ln -sf "$STOCK_TC/lib/libLLVM.so.22.1-rust-1.96.1-stable" "$TC_DIR/lib/"
 
+    # Symlink self-contained linker (our rustc was built with lld)
+    mkdir -p "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin"
+    ln -sf "$STOCK_TC/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld" "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/"
+    ln -sfn "$STOCK_TC/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld" "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/"
+
     # Register with rustup (TC_DIR is outside ~/.rustup/toolchains/, no circular symlink)
     rm -f "$TC_LINK"
     rustup toolchain link "$TOOLCHAIN_NAME" "$TC_DIR" 2>/dev/null || true
@@ -131,7 +136,7 @@ if [[ $# -ge 1 && "$1" == "--train-cmd" ]]; then
     pushd "$WORKDIR" >/dev/null
     RUSTC="$TC_DIR/bin/rustc" \
     RUSTFLAGS="-Cprofile-use=$OUT_DIR/merged.profdata -Z cgu-opt-levels=$OUT_DIR/cgu_opt_levels.txt -Z fn-opt-levels=$OUT_DIR/fn_opt_levels.txt" \
-        cargo "+$TOOLCHAIN_NAME" -Z build-std build --release \
+        cargo "+$TOOLCHAIN_NAME" build --release \
         >"$TRAIN_DIR/rebuild.stdout" 2>"$TRAIN_DIR/rebuild.stderr"
     popd >/dev/null
     echo "saved to $OUT_DIR"
@@ -144,4 +149,4 @@ if [[ $# -eq 0 ]]; then
     echo "$TC_DIR"
     exit 0
 fi
-exec cargo "+$TOOLCHAIN_NAME" -Z build-std "$@"
+exec cargo "+$TOOLCHAIN_NAME" "$@"
