@@ -16,6 +16,12 @@ The purpose of this is to make hot code fast and cold code small in rust project
 - `optimize-rustc.sh` is the rustc-specific train -> merge -> regenerate -> rebuild flow.
 - `optimize-project.sh` captures PGO for a generic Cargo/Rust project.
 
+## Quick start (install pre-built toolchain)
+```bash
+./pgso-toolchain.sh     # downloads & installs to ~/.rustup/toolchains/
+cargo +pgso-almalinux8 build --release
+```
+
 ## Usage
 ### Build the optimized compiler locally
 ```bash
