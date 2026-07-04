@@ -94,20 +94,24 @@ The compiler under test is used as stage0 (via `--set build.rustc`).
 | Configuration | Time | vs stock | vs PGSO stable |
 |-------------|------|---------|---------------|
 | Stock 1.96.1 | 88.0s | — | +9.1% |
-| PGSO stable (stage2 built here) | 80.7s | **-8.3%** | — |
+| PGSO stable (stage2 built here) | **80.7s** | **-8.3%** | — |
 | PGSO nightly (AlmaLinux release) | 106.1s | +20.6% | +31.5% |
+| Os-optimized rustc (opt-level=s) | 1072.9s | +1119% | +1229% |
 
 Key insight: the **PGSO stable** compiler is the fastest — 8% faster than stock.
 It's a stable-channel compiler built with the PGSO opt-level lists applied
 during compilation (`RUSTFLAGS_NOT_BOOTSTRAP`). Its `librustc_driver.so` is
 70MB (vs stock's 151MB), and the smaller binary improves I-cache behavior.
 
-The **PGSO nightly** is slowest because `channel = "nightly"` enables extra
-runtime checks that don't exist in stable builds. This is the tradeoff:
-nightly gives access to `-Z` flags at the cost of compilation speed.
+The **PGSO nightly** is slowest among practical options because `channel = "nightly"`
+enables extra runtime checks. This is the tradeoff: nightly gives access to `-Z`
+flags at the cost of compilation speed.
 
-A fully Oz-optimized rustc (`-C opt-level=z` on all crates) would complete
-this comparison but took too long to build to include here.
+The **Os-optimized** compiler is catastrophically slower (12x) because every
+function in the compiler itself is size-optimized, making all compilation
+slower. This confirms that Oz/Os for the entire compiler binary is not viable;
+selective PGSO optimization (hot functions fast, cold functions small) is the
+correct approach.
 
 See `scripts/bench-compile.sh` to reproduce. The PGSO compiler is built with
 FatLTO + codegen-units=1, producing a smaller `librustc_driver.so` (69MB vs
