@@ -6,6 +6,7 @@ TOOLCHAIN_DIR="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN_NAME"
 RELEASE_URL="https://github.com/gmatht/rust/releases/download/v1.96.1-pgso"
 TARBALL="release-almalinux8.tar.gz"
 STOCK_TC="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/1.96.1-x86_64-unknown-linux-gnu"
+NIGHTLY_TC="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/nightly-x86_64-unknown-linux-gnu"
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
@@ -24,7 +25,8 @@ ensure_toolchain() {
     ensure_stock
 
     echo "Downloading $TOOLCHAIN_NAME toolchain..." >&2
-    mkdir -p "$TOOLCHAIN_DIR/bin" "$TOOLCHAIN_DIR/lib"
+    EXTRACT="/tmp/pgso-extract-$$"
+    mkdir -p "$EXTRACT" "$TOOLCHAIN_DIR/bin" "$TOOLCHAIN_DIR/lib/rustlib"
     if command -v curl &>/dev/null; then
         curl -sL "$RELEASE_URL/$TARBALL" -o "/tmp/$TARBALL"
     elif command -v wget &>/dev/null; then
@@ -34,16 +36,12 @@ ensure_toolchain() {
         exit 1
     fi
 
-    # Extract to temp, then place files correctly
-    mkdir -p "/tmp/pgso-extract"
-    tar xzf "/tmp/$TARBALL" -C "/tmp/pgso-extract"
+    tar xzf "/tmp/$TARBALL" -C "$EXTRACT"
     rm "/tmp/$TARBALL"
 
-    # Copy the compiler binary
-    cp "/tmp/pgso-extract/bin/rustc" "$TOOLCHAIN_DIR/bin/rustc"
-
-    # The driver library is hashed; copy it and create a .so symlink
-    for f in "/tmp/pgso-extract/lib/"*; do
+    # Copy compiler and driver
+    cp "$EXTRACT/bin/rustc" "$TOOLCHAIN_DIR/bin/rustc"
+    for f in "$EXTRACT/lib/"*; do
         bn=$(basename "$f")
         if [[ "$bn" == librustc_driver-* ]]; then
             cp "$f" "$TOOLCHAIN_DIR/lib/$bn"
@@ -51,19 +49,25 @@ ensure_toolchain() {
         fi
     done
 
-    # Copy the matching rustlib (built alongside this compiler)
-    if [[ -d "/tmp/pgso-extract/lib/rustlib" ]]; then
-        cp -r "/tmp/pgso-extract/lib/rustlib" "$TOOLCHAIN_DIR/lib/rustlib"
+    # Copy host stdlib for build scripts
+    if [[ -d "$EXTRACT/lib/rustlib/x86_64-unknown-linux-gnu" ]]; then
+        cp -r "$EXTRACT/lib/rustlib/x86_64-unknown-linux-gnu" "$TOOLCHAIN_DIR/lib/rustlib/"
     fi
-    rm -rf "/tmp/pgso-extract"
+    rm -rf "$EXTRACT"
 
-    # Symlink missing components from stock 1.96.1
-    ln -sf "$STOCK_TC/bin/cargo" "$TOOLCHAIN_DIR/bin/cargo"
+    # Symlink rust-src from stock 1.96.1 for -Z build-std
+    ln -sfn "$STOCK_TC/lib/rustlib/src" "$TOOLCHAIN_DIR/lib/rustlib/src"
+
+    # Symlink LLVM and cargo from stock
+    if [[ -x "$NIGHTLY_TC/bin/cargo" ]]; then
+        ln -sf "$NIGHTLY_TC/bin/cargo" "$TOOLCHAIN_DIR/bin/cargo"
+    else
+        ln -sf "$STOCK_TC/bin/cargo" "$TOOLCHAIN_DIR/bin/cargo"
+    fi
     ln -sf "$STOCK_TC/lib/libLLVM-22-rust-1.96.1-stable.so" "$TOOLCHAIN_DIR/lib/"
     ln -sf "$STOCK_TC/lib/libLLVM.so.22.1-rust-1.96.1-stable" "$TOOLCHAIN_DIR/lib/"
 
-    rustup toolchain link "$TOOLCHAIN_NAME" "$TOOLCHAIN_DIR" 2>/dev/null || true
-    echo "Installed." >&2
+    echo "Installed. Use: cargo +$TOOLCHAIN_NAME -Z build-std build --release" >&2
 }
 
 # --- Profile mode: --train-cmd ---
@@ -100,10 +104,10 @@ if [[ "${1:-}" == "--train-cmd" ]]; then
     exit 0
 fi
 
-# --- Default mode: use the PGSO toolchain ---
+# --- Default mode: use the PGSO toolchain with -Z build-std ---
 ensure_toolchain
 if [[ $# -eq 0 ]]; then
     echo "$TOOLCHAIN_DIR"
     exit 0
 fi
-exec cargo "+$TOOLCHAIN_NAME" "$@"
+exec cargo "+$TOOLCHAIN_NAME" -Z build-std "$@"
