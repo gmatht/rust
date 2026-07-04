@@ -1,108 +1,71 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+TOOLCHAIN_NAME="pgso-almalinux8"
+TOOLCHAIN_DIR="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN_NAME"
+RELEASE_URL="https://github.com/gmatht/rust/releases/download/v1.96.1-pgso"
+TARBALL="$TOOLCHAIN_NAME.tar.gz"
+
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-OUT_DIR="$ROOT/saved/optimized_project"
-PGO_DIR="$OUT_DIR/pgo"
-TRAIN_DIR="$OUT_DIR/train"
-COUNTS_FILE="$PGO_DIR/function_counts.txt"
 
-usage() {
-    cat <<'EOF'
-Usage: optimize-project.sh --train-cmd '...' [--workdir PATH] [-- extra args...]
-
-Profiles a Cargo/Rust project by running the supplied training command with
-Rust PGO enabled, then merges the resulting profiles and writes function block
-counts in the same format as `generate_opt_levels.py` expects.
-
-The training command should be a benchmark or other representative workload,
-not just a plain build.
-
-`--train-cmd` is mandatory.
-`--workdir` defaults to `.` and should point at the project root.
-Any arguments after `--` are appended to the training command.
-EOF
+ensure_toolchain() {
+    if [[ -x "$TOOLCHAIN_DIR/bin/rustc" ]]; then
+        return 0
+    fi
+    echo "Downloading $TOOLCHAIN_NAME toolchain..." >&2
+    mkdir -p "$TOOLCHAIN_DIR"
+    if command -v curl &>/dev/null; then
+        curl -sL "$RELEASE_URL/$TARBALL" -o "/tmp/$TARBALL"
+    elif command -v wget &>/dev/null; then
+        wget -q "$RELEASE_URL/$TARBALL" -O "/tmp/$TARBALL"
+    else
+        echo "error: need curl or wget" >&2
+        exit 1
+    fi
+    tar xzf "/tmp/$TARBALL" -C "$TOOLCHAIN_DIR"
+    rm "/tmp/$TARBALL"
+    rustup toolchain link "$TOOLCHAIN_NAME" "$TOOLCHAIN_DIR" 2>/dev/null || true
+    echo "Installed." >&2
 }
 
-TRAIN_CMD=""
-WORKDIR="."
-TRAIN_ARGS=()
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --train-cmd)
-            TRAIN_CMD="$2"
-            shift 2
-            ;;
-        --workdir)
-            WORKDIR="$2"
-            shift 2
-            ;;
-        --)
-            shift
-            TRAIN_ARGS+=("$@")
-            break
-            ;;
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        *)
-            echo "unknown argument: $1" >&2
-            usage >&2
-            exit 1
-            ;;
-    esac
-done
-
-if [[ -z "$TRAIN_CMD" ]]; then
-    echo "missing --train-cmd" >&2
-    usage >&2
-    exit 1
+# --- Profile mode: --train-cmd ---
+if [[ "${1:-}" == "--train-cmd" ]]; then
+    ensure_toolchain
+    shift
+    TRAIN_CMD="$1"
+    shift || true
+    WORKDIR="${1:-.}"
+    shift 2>/dev/null || true
+    OUT_DIR="$ROOT/saved/optimized_project"
+    PGO_DIR="$OUT_DIR/pgo"
+    TRAIN_DIR="$OUT_DIR/train"
+    COUNTS_FILE="$PGO_DIR/function_counts.txt"
+    mkdir -p "$PGO_DIR" "$TRAIN_DIR"
+    printf '%s\n' "$TRAIN_CMD" > "$TRAIN_DIR/train.cmd"
+    echo "[1/2] Running training command"
+    pushd "$WORKDIR" >/dev/null
+    RUSTC="$TOOLCHAIN_DIR/bin/rustc" CARGO="cargo +$TOOLCHAIN_NAME" \
+    RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=$PGO_DIR -Zfunction-block-counts=$COUNTS_FILE" \
+        bash -lc "$TRAIN_CMD" \
+        >"$TRAIN_DIR/train.stdout" 2>"$TRAIN_DIR/train.stderr"
+    popd >/dev/null
+    echo "[2/2] Merging profiles"
+    llvm_profdata="$(command -v llvm-profdata || true)"
+    if [[ -z "$llvm_profdata" ]]; then
+        llvm_profdata="$TOOLCHAIN_DIR/lib/llvm-bin/bin/llvm-profdata"
+        [[ -x "$llvm_profdata" ]] || { echo "llvm-profdata not found" >&2; exit 1; }
+    fi
+    profiles=("$PGO_DIR"/*.profraw)
+    "$llvm_profdata" merge -o "$OUT_DIR/merged.profdata" "${profiles[@]}"
+    [[ -s "$COUNTS_FILE" ]] || { echo "function_counts.txt not written" >&2; exit 1; }
+    echo "saved to $OUT_DIR"
+    exit 0
 fi
 
-mkdir -p "$PGO_DIR" "$TRAIN_DIR"
-
-TRAIN_CMD_LINE="$TRAIN_CMD"
-if [[ ${#TRAIN_ARGS[@]} -gt 0 ]]; then
-    for arg in "${TRAIN_ARGS[@]}"; do
-        TRAIN_CMD_LINE+=" $(printf '%q' "$arg")"
-    done
+# --- Default mode: use the PGSO toolchain ---
+ensure_toolchain
+if [[ $# -eq 0 ]]; then
+    echo "$TOOLCHAIN_DIR"
+    exit 0
 fi
-printf '%s\n' "$TRAIN_CMD_LINE" > "$TRAIN_DIR/train.cmd"
-
-echo "[1/2] Running training command"
-pushd "$WORKDIR" >/dev/null
-RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=$PGO_DIR -Zfunction-block-counts=$COUNTS_FILE" \
-    bash -lc "$TRAIN_CMD_LINE" \
-    >"$TRAIN_DIR/train.stdout" 2>"$TRAIN_DIR/train.stderr"
-popd >/dev/null
-
-echo "[2/2] Merging profiles"
-llvm_profdata="$(command -v llvm-profdata || true)"
-if [[ -z "$llvm_profdata" ]]; then
-    echo "llvm-profdata not found in PATH" >&2
-    exit 1
-fi
-
-profiles=("$PGO_DIR"/*.profraw)
-if [[ ! -e "${profiles[0]}" ]]; then
-    echo "no .profraw files found in $PGO_DIR" >&2
-    exit 1
-fi
-
-"$llvm_profdata" merge -o "$OUT_DIR/merged.profdata" "${profiles[@]}"
-
-if [[ ! -s "$COUNTS_FILE" ]]; then
-    echo "function counts were not written to $COUNTS_FILE" >&2
-    exit 1
-fi
-
-cat > "$OUT_DIR/README.txt" <<EOF
-Generic PGO capture completed.
-Training command: $TRAIN_CMD_LINE
-Merged profile: $OUT_DIR/merged.profdata
-Function counts: $COUNTS_FILE
-EOF
-
-echo "saved to $OUT_DIR"
+exec cargo "+$TOOLCHAIN_NAME" "$@"

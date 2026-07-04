@@ -16,10 +16,9 @@ The purpose of this is to make hot code fast and cold code small in rust project
 - `optimize-rustc.sh` is the rustc-specific train -> merge -> regenerate -> rebuild flow.
 - `optimize-project.sh` captures PGO for a generic Cargo/Rust project.
 
-## Quick start (install pre-built toolchain)
+## Quick start (one-liner)
 ```bash
-./pgso-toolchain.sh                        # auto-downloads & installs
-./pgso-toolchain.sh cargo build --release   # auto-installs then runs cargo
+curl -sL https://github.com/gmatht/rust/raw/stable-pgso/optimize-project.sh | bash -s -- cargo build --release
 ```
 
 ## Usage
@@ -74,5 +73,5 @@ See [CGU\_TIERING\_ANALYSIS.md](CGU_TIERING_ANALYSIS.md) for:
 ## Docs
 - [CGU\_TIERING\_ANALYSIS.md](CGU_TIERING_ANALYSIS.md)
 - [GENERIC\_PGO\_WRAPPER\_PLAN.md](GENERIC_PGO_WRAPPER_PLAN.md)
-- [optimize-project.sh](optimize-project.sh)
-- [optimize-rustc.sh](optimize-rustc.sh)
+- [optimize-project.sh](optimize-project.sh) — unified wrapper (auto-installs toolchain, profiles, builds)
+- [optimize-rustc.sh](optimize-rustc.sh) — rustc-specific train/rebuild flow
