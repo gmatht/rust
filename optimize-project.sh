@@ -24,7 +24,7 @@ ensure_toolchain() {
     ensure_stock
 
     echo "Downloading $TOOLCHAIN_NAME toolchain..." >&2
-    mkdir -p "$TOOLCHAIN_DIR" "$TOOLCHAIN_DIR/bin" "$TOOLCHAIN_DIR/lib"
+    mkdir -p "$TOOLCHAIN_DIR/bin" "$TOOLCHAIN_DIR/lib"
     if command -v curl &>/dev/null; then
         curl -sL "$RELEASE_URL/$TARBALL" -o "/tmp/$TARBALL"
     elif command -v wget &>/dev/null; then
@@ -38,12 +38,22 @@ ensure_toolchain() {
     mkdir -p "/tmp/pgso-extract"
     tar xzf "/tmp/$TARBALL" -C "/tmp/pgso-extract"
     rm "/tmp/$TARBALL"
-    cp "/tmp/pgso-extract/rustc" "$TOOLCHAIN_DIR/bin/rustc"
-    cp "/tmp/pgso-extract/librustc_driver.so" "$TOOLCHAIN_DIR/lib/"
-    # rustc wrapper links librustc_driver-<hash>.so; get hash from binary
-    DRV_NEEDED=$(readelf -d "$TOOLCHAIN_DIR/bin/rustc" 2>/dev/null | awk '/NEEDED.*librustc_driver/{print $5}' | tr -d '[]' || true)
-    if [[ -n "$DRV_NEEDED" ]] && [[ "$DRV_NEEDED" != "librustc_driver.so" ]]; then
-        ln -sf "librustc_driver.so" "$TOOLCHAIN_DIR/lib/$DRV_NEEDED"
+
+    # Copy the compiler binary
+    cp "/tmp/pgso-extract/bin/rustc" "$TOOLCHAIN_DIR/bin/rustc"
+
+    # The driver library is hashed; copy it and create a .so symlink
+    for f in "/tmp/pgso-extract/lib/"*; do
+        bn=$(basename "$f")
+        if [[ "$bn" == librustc_driver-* ]]; then
+            cp "$f" "$TOOLCHAIN_DIR/lib/$bn"
+            ln -sf "$bn" "$TOOLCHAIN_DIR/lib/librustc_driver.so"
+        fi
+    done
+
+    # Copy the matching rustlib (built alongside this compiler)
+    if [[ -d "/tmp/pgso-extract/lib/rustlib" ]]; then
+        cp -r "/tmp/pgso-extract/lib/rustlib" "$TOOLCHAIN_DIR/lib/rustlib"
     fi
     rm -rf "/tmp/pgso-extract"
 
@@ -51,7 +61,6 @@ ensure_toolchain() {
     ln -sf "$STOCK_TC/bin/cargo" "$TOOLCHAIN_DIR/bin/cargo"
     ln -sf "$STOCK_TC/lib/libLLVM-22-rust-1.96.1-stable.so" "$TOOLCHAIN_DIR/lib/"
     ln -sf "$STOCK_TC/lib/libLLVM.so.22.1-rust-1.96.1-stable" "$TOOLCHAIN_DIR/lib/"
-    ln -sfn "$STOCK_TC/lib/rustlib" "$TOOLCHAIN_DIR/lib/rustlib"
 
     rustup toolchain link "$TOOLCHAIN_NAME" "$TOOLCHAIN_DIR" 2>/dev/null || true
     echo "Installed." >&2
