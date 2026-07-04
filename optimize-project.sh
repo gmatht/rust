@@ -128,7 +128,8 @@ if [[ $# -ge 1 && "$1" == "--train-cmd" ]]; then
         [[ -x "$llvm_profdata" ]] || { echo "llvm-profdata not found" >&2; exit 1; }
     fi
     profiles=("$PGO_DIR"/*.profraw)
-    "$llvm_profdata" merge -o "$OUT_DIR/merged.profdata" "${profiles[@]}"
+    LD_LIBRARY_PATH="$TC_DIR/lib:$LD_LIBRARY_PATH" \
+        "$llvm_profdata" merge -o "$OUT_DIR/merged.profdata" "${profiles[@]}"
     echo "[3/4] Generating opt-level lists"
     python3 "$ROOT/src/tools/generate_opt_levels.py" --profdata "$OUT_DIR/merged.profdata" --llvm-profdata "$llvm_profdata"
     cp /tmp/cgu_opt_levels.txt "$OUT_DIR/cgu_opt_levels.txt" 2>/dev/null || true
