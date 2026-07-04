@@ -4,7 +4,7 @@ Fork of Rust with file-driven CGU tiering and per-function optimization levels.
 
 ## Quick start (one-liner — profiles your project)
 ```bash
-curl -sL https://github.com/gmatht/rust/raw/stable-pgso/optimize-project.sh | bash -s -- --train-cmd 'cargo build --release'
+curl -sL https://github.com/gmatht/rust/raw/stable-pgso/optimize-project.sh | bash -s -- --train-cmd 'YOUR_BENCHMARK --YOUR_OPTIONS'
 ```
 
 This profiles your project with PGO, generates opt-level lists, then rebuilds
@@ -34,7 +34,7 @@ The purpose of this is to make hot code fast and cold code small in rust project
 ```bash
 ./optimize-rustc.sh \
   --workdir /path/to/project \
-  --train-cmd 'cargo build --release'
+  --train-cmd 'YOUR_BENCHMARK --YOUR_OPTIONS'
 ```
 
 ### Rebuild rustc with the saved lists
@@ -47,7 +47,7 @@ python3 x.py build --stage 2 compiler/rustc library/std
 ### Build the current directory with PGSO
 ```bash
 cd /path/to/project
-../rustc/optimize-project.sh --train-cmd './benchmark --bench'
+../rustc/optimize-project.sh --train-cmd 'YOUR_BENCHMARK --YOUR_OPTIONS'
 ```
 
 ### Use the PGSO compiler for your own project
