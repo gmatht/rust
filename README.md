@@ -2,6 +2,10 @@
 
 Fork of Rust with file-driven CGU tiering and per-function optimization levels.
 
+## Quick start (one-liner)
+```bash
+curl -sL https://github.com/gmatht/rust/raw/stable-pgso/optimize-project.sh | bash -s -- --train-cmd YOUR_BENCHMARK_COMMAND cargo build --release
+```
 ## Purpose
 The purpose of this is to make hot code fast and cold code small in rust projects.
 - without hand-editing component crates
@@ -15,11 +19,6 @@ The purpose of this is to make hot code fast and cold code small in rust project
 - `src/tools/generate_opt_levels.py` generates the optimization maps from PGO counts.
 - `optimize-rustc.sh` is the rustc-specific train -> merge -> regenerate -> rebuild flow.
 - `optimize-project.sh` captures PGO for a generic Cargo/Rust project.
-
-## Quick start (one-liner)
-```bash
-curl -sL https://github.com/gmatht/rust/raw/stable-pgso/optimize-project.sh | bash -s -- --train-cmd YOUR_BENCHMARK_COMMAND cargo build --release 
-```
 
 ## Usage
 ### Build the optimized compiler locally
