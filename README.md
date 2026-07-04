@@ -49,6 +49,11 @@ WINDOWS_BUILD_DIR=/mnt/d/tmp/rust-pgso-win64-build \
 ./build-linux-win64.sh
 ```
 
+### Build on AlmaLinux 8 (GLIBC 2.28, wide Linux compatibility)
+```bash
+./build-in-centos7.sh  # works on AlmaLinux 8 WSL
+```
+
 ### Release workflow
 - `.github/workflows/optimized-rustc-release.yml`
 
