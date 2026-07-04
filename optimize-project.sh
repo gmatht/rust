@@ -2,7 +2,8 @@
 set -euo pipefail
 
 TOOLCHAIN_NAME="pgso-almalinux8"
-TOOLCHAIN_DIR="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN_NAME"
+TC_LINK="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN_NAME"
+TC_DIR="/tmp/pgso-$TOOLCHAIN_NAME"
 RELEASE_URL="https://github.com/gmatht/rust/releases/download/v1.96.1-pgso"
 TARBALL="release-almalinux8.tar.gz"
 STOCK_TC="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/1.96.1-x86_64-unknown-linux-gnu"
@@ -19,14 +20,17 @@ ensure_stock() {
 }
 
 ensure_toolchain() {
-    if [[ -x "$TOOLCHAIN_DIR/bin/rustc" ]]; then
+    if [[ -x "$TC_DIR/bin/rustc" ]]; then
         return 0
     fi
     ensure_stock
 
+    rm -rf "$TC_DIR"
+    mkdir -p "$TC_DIR/bin" "$TC_DIR/lib/rustlib"
+
     echo "Downloading $TOOLCHAIN_NAME toolchain..." >&2
     EXTRACT="/tmp/pgso-extract-$$"
-    mkdir -p "$EXTRACT" "$TOOLCHAIN_DIR/bin" "$TOOLCHAIN_DIR/lib/rustlib"
+    mkdir -p "$EXTRACT"
     if command -v curl &>/dev/null; then
         curl -sL "$RELEASE_URL/$TARBALL" -o "/tmp/$TARBALL"
     elif command -v wget &>/dev/null; then
@@ -39,43 +43,60 @@ ensure_toolchain() {
     tar xzf "/tmp/$TARBALL" -C "$EXTRACT"
     rm "/tmp/$TARBALL"
 
-    # Copy compiler and driver
-    cp "$EXTRACT/bin/rustc" "$TOOLCHAIN_DIR/bin/rustc"
+    # Copy compiler binary
+    if [[ -f "$EXTRACT/bin/rustc" ]]; then
+        cp "$EXTRACT/bin/rustc" "$TC_DIR/bin/rustc"
+    elif [[ -f "$EXTRACT/rustc" ]]; then
+        # Handle flat tarball structure
+        cp "$EXTRACT/rustc" "$TC_DIR/bin/rustc"
+    else
+        echo "error: rustc not found in tarball" >&2; exit 1
+    fi
+
+    # Copy driver library (hashed name)
     for f in "$EXTRACT/lib/"*; do
         bn=$(basename "$f")
-        if [[ "$bn" == librustc_driver-* ]]; then
-            cp "$f" "$TOOLCHAIN_DIR/lib/$bn"
-            ln -sf "$bn" "$TOOLCHAIN_DIR/lib/librustc_driver.so"
-        fi
+        [[ "$bn" == librustc_driver-* ]] && cp "$f" "$TC_DIR/lib/$bn" && ln -sf "$bn" "$TC_DIR/lib/librustc_driver.so"
     done
+    # Also handle flat tarball where driver is at root
+    if [[ -f "$EXTRACT/librustc_driver.so" ]] && ! ls "$TC_DIR/lib"/librustc_driver-* &>/dev/null; then
+        DRV_HASH=$(readelf -d "$TC_DIR/bin/rustc" | awk '/NEEDED.*librustc_driver/{print $5}' | tr -d '[]')
+        if [[ -n "$DRV_HASH" ]]; then
+            cp "$EXTRACT/librustc_driver.so" "$TC_DIR/lib/$DRV_HASH"
+            ln -sf "$DRV_HASH" "$TC_DIR/lib/librustc_driver.so"
+        fi
+    fi
 
-    # Copy host stdlib from tarball (needed for build scripts)
+    # Copy host stdlib (matching build, needed for build scripts)
     if [[ -d "$EXTRACT/lib/rustlib/x86_64-unknown-linux-gnu" ]]; then
-        cp -r "$EXTRACT/lib/rustlib/x86_64-unknown-linux-gnu" "$TOOLCHAIN_DIR/lib/rustlib/"
+        cp -r "$EXTRACT/lib/rustlib/x86_64-unknown-linux-gnu" "$TC_DIR/lib/rustlib/"
     fi
     rm -rf "$EXTRACT"
 
-    # Ensure stock 1.96.1 has rust-src for -Z build-std
+    # rust-src for -Z build-std
     rustup component add rust-src --toolchain "$(basename "$STOCK_TC")" 2>/dev/null || true
-    ln -sfn "$STOCK_TC/lib/rustlib/src" "$TOOLCHAIN_DIR/lib/rustlib/src"
+    ln -sfn "$STOCK_TC/lib/rustlib/src" "$TC_DIR/lib/rustlib/src"
 
-    # Symlink LLVM and cargo from stock
+    # Symlink cargo (nightly preferred for -Z build-std)
     if [[ -x "$NIGHTLY_TC/bin/cargo" ]]; then
-        ln -sf "$NIGHTLY_TC/bin/cargo" "$TOOLCHAIN_DIR/bin/cargo"
+        ln -sf "$NIGHTLY_TC/bin/cargo" "$TC_DIR/bin/cargo"
     else
-        ln -sf "$STOCK_TC/bin/cargo" "$TOOLCHAIN_DIR/bin/cargo"
+        ln -sf "$STOCK_TC/bin/cargo" "$TC_DIR/bin/cargo"
     fi
-    ln -sf "$STOCK_TC/lib/libLLVM-22-rust-1.96.1-stable.so" "$TOOLCHAIN_DIR/lib/"
-    ln -sf "$STOCK_TC/lib/libLLVM.so.22.1-rust-1.96.1-stable" "$TOOLCHAIN_DIR/lib/"
 
-    # Link the toolchain so cargo can find it
-    rustup toolchain link "$TOOLCHAIN_NAME" "$TOOLCHAIN_DIR" 2>/dev/null || true
+    # Symlink LLVM from stock (identical version)
+    ln -sf "$STOCK_TC/lib/libLLVM-22-rust-1.96.1-stable.so" "$TC_DIR/lib/"
+    ln -sf "$STOCK_TC/lib/libLLVM.so.22.1-rust-1.96.1-stable" "$TC_DIR/lib/"
+
+    # Register with rustup (TC_DIR is outside ~/.rustup/toolchains/, no circular symlink)
+    rm -f "$TC_LINK"
+    rustup toolchain link "$TOOLCHAIN_NAME" "$TC_DIR" 2>/dev/null || true
 
     echo "Installed. Use: cargo +$TOOLCHAIN_NAME -Z build-std build --release" >&2
 }
 
 # --- Profile mode: --train-cmd ---
-if [[ "${1:-}" == "--train-cmd" ]]; then
+if [[ $# -ge 1 && "$1" == "--train-cmd" ]]; then
     ensure_toolchain
     shift
     TRAIN_CMD="$1"
@@ -89,7 +110,7 @@ if [[ "${1:-}" == "--train-cmd" ]]; then
     printf '%s\n' "$TRAIN_CMD" > "$TRAIN_DIR/train.cmd"
     echo "[1/3] Running training command"
     pushd "$WORKDIR" >/dev/null
-    RUSTC="$TOOLCHAIN_DIR/bin/rustc" CARGO="cargo +$TOOLCHAIN_NAME" \
+    RUSTC="$TC_DIR/bin/rustc" CARGO="cargo +$TOOLCHAIN_NAME" \
     RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=$PGO_DIR" \
         bash -lc "$TRAIN_CMD" \
         >"$TRAIN_DIR/train.stdout" 2>"$TRAIN_DIR/train.stderr"
@@ -97,18 +118,18 @@ if [[ "${1:-}" == "--train-cmd" ]]; then
     echo "[2/3] Merging profiles"
     llvm_profdata="$(command -v llvm-profdata || true)"
     if [[ -z "$llvm_profdata" ]]; then
-        llvm_profdata=$(find /root/.rustup/toolchains/ -name llvm-profdata 2>/dev/null | head -1)
+        llvm_profdata=$(find "$TC_DIR" -name llvm-profdata 2>/dev/null | head -1)
         [[ -x "$llvm_profdata" ]] || { echo "llvm-profdata not found" >&2; exit 1; }
     fi
     profiles=("$PGO_DIR"/*.profraw)
     "$llvm_profdata" merge -o "$OUT_DIR/merged.profdata" "${profiles[@]}"
     echo "[3/4] Generating opt-level lists"
     python3 "$ROOT/src/tools/generate_opt_levels.py" --profdata "$OUT_DIR/merged.profdata" --llvm-profdata "$llvm_profdata"
-    cp /tmp/cgu_opt_levels.txt "$OUT_DIR/cgu_opt_levels.txt"
-    cp /tmp/fn_opt_levels.txt "$OUT_DIR/fn_opt_levels.txt"
+    cp /tmp/cgu_opt_levels.txt "$OUT_DIR/cgu_opt_levels.txt" 2>/dev/null || true
+    cp /tmp/fn_opt_levels.txt "$OUT_DIR/fn_opt_levels.txt" 2>/dev/null || true
     echo "[4/4] Rebuilding with PGO + PGSO"
     pushd "$WORKDIR" >/dev/null
-    RUSTC="$TOOLCHAIN_DIR/bin/rustc" \
+    RUSTC="$TC_DIR/bin/rustc" \
     RUSTFLAGS="-Cprofile-use=$OUT_DIR/merged.profdata -Z cgu-opt-levels=$OUT_DIR/cgu_opt_levels.txt -Z fn-opt-levels=$OUT_DIR/fn_opt_levels.txt" \
         cargo "+$TOOLCHAIN_NAME" -Z build-std build --release \
         >"$TRAIN_DIR/rebuild.stdout" 2>"$TRAIN_DIR/rebuild.stderr"
@@ -117,10 +138,10 @@ if [[ "${1:-}" == "--train-cmd" ]]; then
     exit 0
 fi
 
-# --- Default mode: use the PGSO toolchain with -Z build-std ---
+# --- Default mode: cargo passthrough ---
 ensure_toolchain
 if [[ $# -eq 0 ]]; then
-    echo "$TOOLCHAIN_DIR"
+    echo "$TC_DIR"
     exit 0
 fi
 exec cargo "+$TOOLCHAIN_NAME" -Z build-std "$@"
