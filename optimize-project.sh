@@ -84,9 +84,14 @@ ensure_toolchain() {
         ln -sf "$STOCK_TC/bin/cargo" "$TC_DIR/bin/cargo"
     fi
 
-    # Symlink LLVM from stock (identical version)
+    # Symlink LLVM from stock (identical version) - needed in both lib/ and rustlib lib/
     ln -sf "$STOCK_TC/lib/libLLVM-22-rust-1.96.1-stable.so" "$TC_DIR/lib/"
     ln -sf "$STOCK_TC/lib/libLLVM.so.22.1-rust-1.96.1-stable" "$TC_DIR/lib/"
+    ln -sf "$STOCK_TC/lib/libLLVM.so.22.1-rust-1.96.1-stable" "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/lib/"
+    ln -sf "$STOCK_TC/lib/libLLVM-22-rust-1.96.1-stable.so" "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/lib/"
+
+    # Ensure rustlib lib dir exists for LLVM symlinks
+    mkdir -p "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/lib"
 
     # Symlink self-contained linker (our rustc was built with lld)
     mkdir -p "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin"
