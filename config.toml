@@ -1,0 +1,17 @@
+profile = "library"
+change-id = 154587
+
+[build]
+profiler = true
+
+[llvm]
+download-ci-llvm = true
+
+# Optimize stage1 libstd to match system rustc size.
+# The "compiler" profile enables debug assertions which bloat libstd by ~322K.
+# ThinLTO + single CGU reduces libstd size significantly.
+[rust]
+channel = "nightly"
+lto = "fat"
+codegen-units = 1
+# rustflags passed via RUSTFLAGS_NOT_BOOTSTRAP instead

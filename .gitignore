@@ -50,6 +50,7 @@ no_llvm_build
 /build
 /build-rust-analyzer
 /dist/
+*.tar.gz
 /unicode-downloads
 /target
 /library/target
