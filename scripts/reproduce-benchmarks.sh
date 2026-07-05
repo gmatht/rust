@@ -10,6 +10,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STOCK_TC="1.96.1"
 RESULTS="/tmp/bench-results.txt"
 RUNS=3
+CACHE_DIR="/tmp/rustc-bench-cache"
 
 echo "========================================================================="
 echo "  Reproducing PGSO Compiler Benchmarks"
@@ -40,13 +41,9 @@ rustc_path() {
 }
 
 cargo_path() {
-    local tc="$1"
-    case "$tc" in
-        stock|pgso-stable|os)
-            rustup which cargo --toolchain "$STOCK_TC" 2>/dev/null ;;
-        pgso-nightly)
-            echo "/tmp/pgso-pgso-almalinux8/bin/cargo" ;;
-    esac
+    # Always use stock cargo for building rustc itself.
+    # The nightly cargo (1.98.0) is incompatible with the 1.96.1 bootstrap.
+    rustup which cargo --toolchain "$STOCK_TC" 2>/dev/null
 }
 
 build_variant() {
@@ -77,11 +74,31 @@ bench_variant() {
     fi
 
     echo ""
+    # Pre-populate shared LLVM cache so it's not re-downloaded per run
+    mkdir -p "$CACHE_DIR"
+    if [ ! -d "$CACHE_DIR/llvm-cache" ]; then
+        echo "  Pre-downloading LLVM..."
+        # Do one throwaway build to populate the cache, then keep the cache dir
+        local warmup="/tmp/rustc-bench-warmup-$label"
+        rm -rf "$warmup"
+        python3 "$ROOT/x.py" build --stage 1 \
+            --set build.rustc="$rustc" --set build.cargo="$cargo" \
+            library/std compiler/rustc --build-dir "$warmup" -j 4 2>&1 | tail -1
+        # Move the cache to a shared location
+        mv "$warmup/cache" "$CACHE_DIR/llvm-cache" 2>/dev/null || true
+        rm -rf "$warmup"
+        echo "  LLVM cached."
+    fi
+
+    echo ""
     echo "--- $label ---"
     echo "  rustc: $rustc"
     for run in $(seq 1 $RUNS); do
         local bdir="/tmp/rustc-bench-$label-run-$run"
         rm -rf "$bdir"
+        mkdir -p "$bdir"
+        # Symlink the shared LLVM cache into the fresh build directory
+        ln -sfn "$CACHE_DIR/llvm-cache" "$bdir/cache" 2>/dev/null || true
         local wall
         wall=$(/usr/bin/time -f '%e' python3 "$ROOT/x.py" build --stage 1 \
             --set build.rustc="$rustc" --set build.cargo="$cargo" \
