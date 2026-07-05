@@ -112,11 +112,20 @@ Implication: we should not promise compatibility with the shipped stdlib unless 
 
 ### Measured binary size
 
-- Stock 1.96.1 `librustc_driver.so`: 151,572,320 bytes
-- This tree's stage1 `librustc_driver.so`: 92,304,128 bytes
-- This tree's stage2 `librustc_driver.so`: 72,069,856 bytes
+| Configuration | `rustc` | `librustc_driver.so` | vs stock |
+|-------------|--------|---------------------|---------|
+| Stock 1.96.1 | 631K | 145M | — |
+| PGSO stable | 6.9K | 70M | **-52%** |
+| PGSO nightly | 8.9K | 70M | **-52%** |
+| Os-optimized | 6.9K | 132M | -9% |
 
-So the customized compiler payload is substantially smaller than stock 1.96.1.
+PGSO builds cut the compiler payload in half (70MB vs 145MB). The `rustc` wrapper
+is smaller too (6-9K vs 631K) because PGSO builds use dynamic linking for the
+wrapper, while stock statically links more code into it.
+
+The Os-optimized build achieves little size saving (132MB, -9%) because FatLTO
+already removes most dead code. Size optimization of individual functions doesn't
+help much when LTO already eliminates unused code at the module level.
 
 ## Usage
 
