@@ -8,13 +8,27 @@ to give results that are too good to be true, I would take some of them with a g
 of salt, I'll need to double check that they are measuring what I think they are).
 
 ## Quick start (one-liner — profiles your project)
+First you will need a project with some profdata. If you don't have one of your own
+here is one I prepared earlier:
+
 ```bash
-curl -sL https://github.com/gmatht/rust/raw/stable-pgso/optimize-project.sh | bash -s -- --train-cmd 'YOUR_BENCHMARK --YOUR_OPTIONS'
+git clone https://github.com/gmatht/rust_pgo_Oz3_bench.git && cd rust_pgo_Oz3_bench
 ```
 
-This profiles your project with PGO, generates opt-level lists, then rebuilds
-with PGSO applied. The resulting binary has hot code optimized for speed and
-cold code optimized for size.
+NOTE: While I don't think this the binary is infected with anything, and FWIW VirusTotal
+reported no warnings. I STRONGLY RECOMMEND USING A CONTAINER/VM/JAIL ETC. IF YOU
+ARE IN THE HABIT OF GRABBING RANDOM BINARIES OFF THE WEB. I am not publishing a Windows
+binary, Windows users probably shouldn't trust random .exe files anyway.
+
+Now that you have something to run PGSO on, you can use the one liner from your Linux container/VM: 
+
+```bash
+curl -sL https://github.com/gmatht/rust/raw/v1.96-pgso/optimize-project.sh | bash -s -- --profdata target/pgo-data-oz3/merged.profdata
+```
+
+Note that other projects are likely to put their profile data somewhere other than
+'target/pgo-data-oz3/merged.profdata' so you may have to edit this argument.
+They may even expect you to generate your own profile data.
 
 ### How `--train-cmd` works
 
@@ -92,13 +106,6 @@ cd /path/to/project
 
 ### Build Linux and Win64 binaries
 ```bash
-./build-linux-win64.sh
-```
-Windows toolchain overrides if needed:
-```bash
-WINDOWS_CARGO=/mnt/c/Users/s_pam/.cargo/bin/cargo.exe \
-WINDOWS_RUSTC=/mnt/c/Users/s_pam/.cargo/bin/rustc.exe \
-WINDOWS_BUILD_DIR=/mnt/d/tmp/rust-pgso-win64-build \
 ./build-linux-win64.sh
 ```
 
