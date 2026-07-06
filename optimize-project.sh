@@ -2,14 +2,84 @@
 set -euo pipefail
 
 TOOLCHAIN_NAME="pgso-almalinux8"
-TC_LINK="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN_NAME"
-TC_DIR="/tmp/pgso-$TOOLCHAIN_NAME"
+TC_DIR="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN_NAME"
 RELEASE_URL="https://github.com/gmatht/rust/releases/download/v1.96.1-pgso"
 TARBALL="release-almalinux8.tar.gz"
 STOCK_TC="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/1.96.1-x86_64-unknown-linux-gnu"
 NIGHTLY_TC="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/nightly-x86_64-unknown-linux-gnu"
 
 GEN_SCRIPT="$TC_DIR/share/generate_opt_levels.py"
+
+usage() {
+    cat <<'EOF'
+Usage: optimize-project.sh --train-cmd 'CMD' [--workdir PATH] [--output-dir PATH]
+       optimize-project.sh --profdata FILE.profdata [--workdir PATH] [--output-dir PATH]
+
+Options:
+  --train-cmd CMD    Training command to generate PGO profiles (required unless --profdata)
+  --profdata FILE    Use an existing merged .profdata file (skip training)
+  --profile FILE     Same as --profdata
+  --workdir PATH     Project root directory (default: .)
+  --output-dir PATH  Output directory (default: <workdir>/target/pgo/)
+  -o PATH            Same as --output-dir
+EOF
+}
+
+TRAIN_CMD=""
+PROFDATA=""
+WORKDIR="."
+OUT_DIR=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --train-cmd)
+            TRAIN_CMD="$2"
+            shift 2
+            ;;
+        --profdata|--profile)
+            PROFDATA="$2"
+            shift 2
+            ;;
+        --output-dir|-o)
+            OUT_DIR="$2"
+            shift 2
+            ;;
+        --workdir)
+            WORKDIR="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [[ -z "$TRAIN_CMD" && -z "$PROFDATA" ]]; then
+    echo "error: need --train-cmd or --profdata" >&2
+    usage >&2
+    exit 1
+fi
+
+# Resolve paths to absolute
+WORKDIR="$(readlink -f "$WORKDIR" 2>/dev/null || echo "$WORKDIR")"
+if [[ -n "$PROFDATA" ]]; then
+    PROFDATA_DIR="$(readlink -f "$(dirname "$PROFDATA")" 2>/dev/null)" || PROFDATA_DIR=""
+    if [[ -n "$PROFDATA_DIR" ]]; then
+        PROFDATA="$PROFDATA_DIR/$(basename "$PROFDATA")"
+    fi
+fi
+if [[ -n "$OUT_DIR" ]]; then
+    case "$OUT_DIR" in
+        /*) ;;  # already absolute
+        *) OUT_DIR="$WORKDIR/$OUT_DIR" ;;
+    esac
+fi
 
 ensure_stock() {
     if [[ ! -x "$STOCK_TC/bin/rustc" ]]; then
@@ -71,6 +141,11 @@ ensure_toolchain() {
     if [[ -d "$EXTRACT/share" ]]; then
         cp -r "$EXTRACT/share" "$TC_DIR/"
     fi
+    # Always prefer the local copy over the tarball's (may have updates)
+    local_gen="$(dirname "$0")/src/tools/generate_opt_levels.py"
+    if [[ -f "$local_gen" ]]; then
+        cp "$local_gen" "$TC_DIR/share/generate_opt_levels.py"
+    fi
 
     # Copy host stdlib (matching build, needed for build scripts)
     if [[ -d "$EXTRACT/lib/rustlib/x86_64-unknown-linux-gnu" ]]; then
@@ -104,63 +179,67 @@ ensure_toolchain() {
     rm -rf "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld"
     ln -sfn "$STOCK_TC/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld" "$TC_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/"
 
-    # Register with rustup (TC_DIR is outside ~/.rustup/toolchains/, no circular symlink)
-    rm -f "$TC_LINK"
-    rustup toolchain link "$TOOLCHAIN_NAME" "$TC_DIR" 2>/dev/null || true
-
     echo "Installed. Use: cargo +$TOOLCHAIN_NAME -Z build-std build --release" >&2
 }
 
-# --- Profile mode: --train-cmd ---
-if [[ $# -ge 1 && "$1" == "--train-cmd" ]]; then
-    ensure_toolchain
-    shift
-    TRAIN_CMD="$1"
-    shift || true
-    WORKDIR="${1:-.}"
-    shift 2>/dev/null || true
-    OUT_DIR="$WORKDIR/saved/optimized_project"
-    PGO_DIR="$OUT_DIR/pgo"
-    TRAIN_DIR="$OUT_DIR/train"
-    mkdir -p "$PGO_DIR" "$TRAIN_DIR"
+# Default output directory
+if [[ -z "$OUT_DIR" ]]; then
+    OUT_DIR="$WORKDIR/target/pgo"
+fi
+
+ensure_toolchain
+
+abs_out="$(cd "$WORKDIR" && mkdir -p "$OUT_DIR" && cd "$OUT_DIR" && pwd)"
+PGO_DIR="$abs_out/pgo"
+TRAIN_DIR="$abs_out/train"
+mkdir -p "$PGO_DIR" "$TRAIN_DIR"
+
+# Find llvm-profdata
+llvm_profdata=$(find "$TC_DIR" -name llvm-profdata -type f 2>/dev/null | head -1)
+if [[ -z "$llvm_profdata" ]]; then
+    llvm_profdata="$(command -v llvm-profdata || true)"
+    if [[ -z "$llvm_profdata" || ! -x "$llvm_profdata" ]]; then
+        echo "llvm-profdata not found" >&2
+        exit 1
+    fi
+fi
+
+if [[ -n "$TRAIN_CMD" ]]; then
+    # ---- Training mode: instrumented build -> run -> merge ----
     printf '%s\n' "$TRAIN_CMD" > "$TRAIN_DIR/train.cmd"
-    echo "[1/3] Running training command"
+    echo "[1/4] Running training command"
     pushd "$WORKDIR" >/dev/null
     RUSTC="$TC_DIR/bin/rustc" CARGO="cargo +$TOOLCHAIN_NAME" \
     RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=$PGO_DIR" \
         bash -lc "$TRAIN_CMD" \
         >"$TRAIN_DIR/train.stdout" 2>"$TRAIN_DIR/train.stderr"
     popd >/dev/null
-    echo "[2/3] Merging profiles"
-    # Prefer the toolchain's own llvm-profdata (matches our LLVM version)
-    llvm_profdata=$(find "$TC_DIR" -name llvm-profdata -type f 2>/dev/null | head -1)
-    if [[ -z "$llvm_profdata" ]]; then
-        llvm_profdata="$(command -v llvm-profdata || true)"
-        [[ -x "$llvm_profdata" ]] || { echo "llvm-profdata not found" >&2; exit 1; }
-    fi
+    echo "[2/4] Merging profiles"
     profiles=("$PGO_DIR"/*.profraw)
+    if [[ ! -e "${profiles[0]}" ]]; then
+        echo "no .profraw files found in $PGO_DIR" >&2
+        exit 1
+    fi
     LD_LIBRARY_PATH="$TC_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-        "$llvm_profdata" merge -o "$OUT_DIR/merged.profdata" "${profiles[@]}"
-    echo "[3/4] Generating opt-level lists"
-    python3 "$GEN_SCRIPT" --profdata "$OUT_DIR/merged.profdata" --llvm-profdata "$llvm_profdata"
-    cp /tmp/cgu_opt_levels.txt "$OUT_DIR/cgu_opt_levels.txt" 2>/dev/null || true
-    cp /tmp/fn_opt_levels.txt "$OUT_DIR/fn_opt_levels.txt" 2>/dev/null || true
-    echo "[4/4] Rebuilding with PGO + PGSO"
-    pushd "$WORKDIR" >/dev/null
-    abs_out="$(cd "$OUT_DIR" && pwd)"
-    RUSTC="$TC_DIR/bin/rustc" \
-    RUSTFLAGS="-Cprofile-use=$abs_out/merged.profdata -Z hot-cold-split -Z cgu-opt-levels=$abs_out/cgu_opt_levels.txt -Z fn-opt-levels=$abs_out/fn_opt_levels.txt" \
-        cargo "+$TOOLCHAIN_NAME" build --release \
-        >"$TRAIN_DIR/rebuild.stdout" 2>"$TRAIN_DIR/rebuild.stderr"
-    popd >/dev/null
-    echo "saved to $OUT_DIR"
-    exit 0
+        "$llvm_profdata" merge -o "$abs_out/merged.profdata" "${profiles[@]}"
+    PROFDATA="$abs_out/merged.profdata"
 fi
 
-# --- Default mode: cargo passthrough ---
-ensure_toolchain
-if [[ $# -eq 0 ]]; then
-    echo "$TC_DIR"
-    exit 0
-fi
-exec cargo "+$TOOLCHAIN_NAME" "$@"
+# ---- Generate opt-level lists from profile data ----
+echo "[3/4] Generating opt-level lists"
+LD_LIBRARY_PATH="$TC_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    python3 "$GEN_SCRIPT" \
+    --profdata "$PROFDATA" \
+    --llvm-profdata "$llvm_profdata" \
+    --fn-opt-levels "$abs_out/fn_opt_levels.txt" \
+    --cgu-opt-levels "$abs_out/cgu_opt_levels.txt"
+
+# ---- Rebuild with PGO + PGSO ----
+echo "[4/4] Rebuilding with PGO + PGSO"
+pushd "$WORKDIR" >/dev/null
+RUSTC="$TC_DIR/bin/rustc" \
+RUSTFLAGS="-Cprofile-use=$PROFDATA -Z hot-cold-split -Z cgu-opt-levels=$abs_out/cgu_opt_levels.txt -Z fn-opt-levels=$abs_out/fn_opt_levels.txt" \
+    cargo "+$TOOLCHAIN_NAME" build --release \
+    >"$TRAIN_DIR/rebuild.stdout" 2>"$TRAIN_DIR/rebuild.stderr"
+popd >/dev/null
+echo "saved to $abs_out"

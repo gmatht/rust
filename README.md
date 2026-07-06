@@ -66,22 +66,28 @@ The purpose of this is to make hot code fast and cold code small in rust project
   --train-cmd 'cargo build --release'
 ```
 
+### Rebuild with existing profile data (skip training)
+```bash
+./optimize-project.sh --profdata /path/to/merged.profdata
+./optimize-rustc.sh --profdata /path/to/merged.profdata
+```
+
 ### Rebuild rustc with the saved lists
 ```bash
 RUSTFLAGS_NOT_BOOTSTRAP="-Z hot-cold-split \
-  -Z cgu-opt-levels=build/pgo_data/cgu_opt_levels.txt \
-  -Z fn-opt-levels=build/pgo_data/fn_opt_levels.txt" \
+  -Z cgu-opt-levels=target/pgo/cgu_opt_levels.txt \
+  -Z fn-opt-levels=target/pgo/fn_opt_levels.txt" \
 python3 x.py build --stage 2 compiler/rustc library/std
 ```
 ### Build the current directory with PGSO
 ```bash
 cd /path/to/project
-../rustc/optimize-project.sh --train-cmd 'YOUR_BENCHMARK --YOUR_OPTIONS'
+../rustc/optimize-project.sh --train-cmd 'cargo build --release && ./target/release/myapp'
 ```
 
 ### Use the PGSO compiler for your own project
 ```bash
-./optimize-project.sh --train-cmd 'YOUR_BENCHMARK --YOUR_OPTIONS'
+./optimize-project.sh --train-cmd 'cargo build --release && ./target/release/myapp'
 ```
 
 ### Build Linux and Win64 binaries

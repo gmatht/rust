@@ -71,6 +71,18 @@ def main():
     parser = argparse.ArgumentParser(description="Generate PGSO opt-level files from PGO profile")
     parser.add_argument("--profdata", required=True, help="Path to merged .profdata file")
     parser.add_argument("--llvm-profdata", help="Path to llvm-profdata binary")
+    parser.add_argument("--fn-opt-levels", default="/tmp/fn_opt_levels.txt",
+        help="Output path for function opt-levels (default /tmp/fn_opt_levels.txt)")
+    parser.add_argument("--cgu-opt-levels", default="/tmp/cgu_opt_levels.txt",
+        help="Output path for CGU opt-levels (default /tmp/cgu_opt_levels.txt)")
+    parser.add_argument("--hot-threshold", type=int, default=100,
+        help="Divide max_count by this to get hot threshold (default 100 = top 1%%)")
+    parser.add_argument("--warm-threshold", type=int, default=500,
+        help="Divide max_count by this to get warm threshold (default 500 = top 0.2%%)")
+    parser.add_argument("--tepid-threshold", type=int, default=2000,
+        help="Divide max_count by this to get tepid threshold (default 2000 = top 0.05%%)")
+    parser.add_argument("--o3-everything", action="store_true",
+        help="Set all thresholds to 0 so every function gets O3")
     args = parser.parse_args()
 
     if args.llvm_profdata:
@@ -82,12 +94,16 @@ def main():
         sys.exit(1)
 
     max_count = max(counts.values())
-    hot_thr = max(max_count // 100, 1)
-    warm_thr = max(max_count * 2 // 1000, 1)
-    tepid_thr = max(max_count // 2000, 1)
+    if args.o3_everything:
+        hot_thr = warm_thr = tepid_thr = 0
+    else:
+        hot_thr = max(max_count // args.hot_threshold, 1)
+        warm_thr = max(max_count * 2 // args.warm_threshold, 1)
+        tepid_thr = max(max_count // args.tepid_threshold, 1)
 
     # --- Function opt-levels ---
-    with open("/tmp/fn_opt_levels.txt", "w") as f:
+    fn_out = args.fn_opt_levels
+    with open(fn_out, "w") as f:
         for name, count in sorted(counts.items(), key=lambda x: -x[1]):
             if count > hot_thr:
                 f.write(f"{name} O3\n")
@@ -124,7 +140,8 @@ def main():
                 crate_counts[crate][1] += 1
                 break
 
-    with open("/tmp/cgu_opt_levels.txt", "w") as f:
+    cgu_out = args.cgu_opt_levels
+    with open(cgu_out, "w") as f:
         f.write("# CGU opt levels (prefix match against crate name)\n")
         for crate in known_crates:
             total, n = crate_counts.get(crate, (0, 0))
@@ -144,8 +161,8 @@ def main():
     classified = sum(1 for c in counts.values() if c > tepid_thr)
     crates = sum(1 for _, n in crate_counts.values() if n > 0)
     print(f"Extracted {len(counts)} functions from {args.profdata}")
-    print(f"Wrote /tmp/fn_opt_levels.txt ({classified} classified)")
-    print(f"Wrote /tmp/cgu_opt_levels.txt ({crates} crates)")
+    print(f"Wrote {fn_out} ({classified} classified)")
+    print(f"Wrote {cgu_out} ({crates} crates)")
 
 if __name__ == "__main__":
     main()
