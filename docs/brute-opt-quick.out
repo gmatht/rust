@@ -1,0 +1,147 @@
+
+2 ✗ root@PC ~/src/rustloop/rust1.96$ scripts/brute-opt-quick.sh
+Disabled .cargo/config.toml (saved as .cargo/config.toml.brute-quick-saved)
+
+=========================================================================
+  Step 1: Creating per-level cgu_opt_levels files
+=========================================================================
+  Created /root/src/rustloop/rust1.96/build/pgo_data/cgu_opt_levels_all_Oz.txt
+  Created /root/src/rustloop/rust1.96/build/pgo_data/cgu_opt_levels_all_Os.txt
+  Created /root/src/rustloop/rust1.96/build/pgo_data/cgu_opt_levels_all_O1.txt
+  Created /root/src/rustloop/rust1.96/build/pgo_data/cgu_opt_levels_all_O2.txt
+  Created /root/src/rustloop/rust1.96/build/pgo_data/cgu_opt_levels_all_O3.txt
+
+=========================================================================
+  Step 2: Building and measuring each global opt level
+=========================================================================
+  Using existing /root/src/rustloop/rust1.96/build-brute-quick as Oz template (no rebuild)
+  Measured 1200 Oz crates from existing BUILD_DIR
+
+=== Creating /root/src/rustloop/rust1.96/build-brute-quick-Os (hard-linked from /root/src/rustloop/rust1.96/build-brute-quick) ===
+  cp -al took 884ms
+
+=== Building Os (all crates at Os) in /root/src/rustloop/rust1.96/build-brute-quick-Os ===
+Scope command line contains environment variable, which is not expanded by default for now, but will be expanded by default in the future. Use --expand-environment=yes/no to explicitly control it as needed.
+Running as unit: brute-quick-Os.scope; invocation ID: c1ebe2d894aa41b5ae46d04b6de57b2c
+  Build time: 825s, librustc_driver.so: 80851448 bytes (77 MB), peak mem: 6058876928 bytes (5778 MB)
+  Measured 1200 crates
+
+=== Creating /root/src/rustloop/rust1.96/build-brute-quick-O1 (hard-linked from /root/src/rustloop/rust1.96/build-brute-quick) ===
+  cp -al took 997ms
+
+=== Building O1 (all crates at O1) in /root/src/rustloop/rust1.96/build-brute-quick-O1 ===
+Scope command line contains environment variable, which is not expanded by default for now, but will be expanded by default in the future. Use --expand-environment=yes/no to explicitly control it as needed.
+Running as unit: brute-quick-O1.scope; invocation ID: 4e72fbc17ebb47ffae3fad43acf11412
+  Build time: 1135s, librustc_driver.so: 78952496 bytes (75 MB), peak mem: 5686145024 bytes (5422 MB)
+  Measured 1200 crates
+
+=== Creating /root/src/rustloop/rust1.96/build-brute-quick-O2 (hard-linked from /root/src/rustloop/rust1.96/build-brute-quick) ===
+  cp -al took 1235ms
+
+=== Building O2 (all crates at O2) in /root/src/rustloop/rust1.96/build-brute-quick-O2 ===
+Scope command line contains environment variable, which is not expanded by default for now, but will be expanded by default in the future. Use --expand-environment=yes/no to explicitly control it as needed.
+Running as unit: brute-quick-O2.scope; invocation ID: 795eacbe7cc04215b4c71597f5fe1275
+  Build time: 1324s, librustc_driver.so: 80846752 bytes (77 MB), peak mem: 6034796544 bytes (5755 MB)
+  Measured 1200 crates
+
+=== Creating /root/src/rustloop/rust1.96/build-brute-quick-O3 (hard-linked from /root/src/rustloop/rust1.96/build-brute-quick) ===
+  cp -al took 1014ms
+
+=== Building O3 (all crates at O3) in /root/src/rustloop/rust1.96/build-brute-quick-O3 ===
+Scope command line contains environment variable, which is not expanded by default for now, but will be expanded by default in the future. Use --expand-environment=yes/no to explicitly control it as needed.
+Running as unit: brute-quick-O3.scope; invocation ID: 63512031bad44d8c9d68b90e2483d97e
+  Build time: 908s, librustc_driver.so: 78952496 bytes (75 MB), peak mem: 5763874816 bytes (5496 MB)
+  Measured 1200 crates
+
+=========================================================================
+  Build summary
+=========================================================================
+Level  Build Time Driver Size  Peak Mem
+-----  ---------- -----------  --------
+Oz     0     s    0 MB        0 MB
+Os     825   s    77 MB        5778 MB
+O1     1135  s    75 MB        5422 MB
+O2     1324  s    77 MB        5755 MB
+O3     908   s    75 MB        5496 MB
+
+=========================================================================
+  Step 4: Selecting best opt-level per crate
+=========================================================================
+  rustc_arena: Os -> O3 (text: 865 -> 865, delta=0)
+  rustc_ast: Oz -> O3 (text: 226593 -> 226593, delta=0)
+  rustc_ast_lowering: Os -> O3 (text: 972390 -> 972390, delta=0)
+  rustc_ast_passes: Os -> O3 (text: 226443 -> 226443, delta=0)
+  rustc_ast_pretty: Oz -> O3 (text: 95251 -> 95251, delta=0)
+  rustc_attr_parsing: Os -> O3 (text: 1017980 -> 1017980, delta=0)
+  rustc_borrowck: Os -> O3 (text: 2572595 -> 2572595, delta=0)
+  rustc_builtin_macros: Oz -> O3 (text: 750689 -> 750689, delta=0)
+  rustc_codegen_llvm: O2 -> O3 (text: 1473664 -> 1473664, delta=0)
+  rustc_codegen_ssa: Os -> O3 (text: 954080 -> 954080, delta=0)
+  rustc_const_eval: Oz -> O3 (text: 1680275 -> 1680275, delta=0)
+  rustc_data_structures: Os -> O3 (text: 62217 -> 62217, delta=0)
+  rustc_driver_impl: O2 -> O3 (text: 543587 -> 543587, delta=0)
+  rustc_errors: Os -> O3 (text: 674150 -> 674150, delta=0)
+  rustc_expand: Oz -> O3 (text: 809727 -> 809727, delta=0)
+  rustc_feature: Os -> O3 (text: 55785 -> 55785, delta=0)
+  rustc_fs_util: Oz -> O3 (text: 777 -> 777, delta=0)
+  rustc_hir: Oz -> O3 (text: 281413 -> 281413, delta=0)
+  rustc_hir_analysis: Os -> O3 (text: 2501506 -> 2501506, delta=0)
+  rustc_hir_typeck: Os -> O3 (text: 2512645 -> 2512645, delta=0)
+  rustc_incremental: Oz -> O3 (text: 327202 -> 327202, delta=0)
+  rustc_infer: Os -> O3 (text: 604988 -> 604988, delta=0)
+  rustc_interface: Os -> O3 (text: 1033453 -> 1033453, delta=0)
+  rustc_lint: Os -> O3 (text: 1726620 -> 1726620, delta=0)
+  rustc_lexer: Oz -> O3 (text: 11256 -> 11256, delta=0)
+  rustc_llvm: Oz -> O3 (text: 126691 -> 126691, delta=0)
+  rustc_log: Os -> O3 (text: 115216 -> 115216, delta=0)
+  rustc_middle: O2 -> O3 (text: 1633671 -> 1633671, delta=0)
+  rustc_mir_build: Os -> O3 (text: 912554 -> 912554, delta=0)
+  rustc_mir_dataflow: Os -> O3 (text: 215151 -> 215151, delta=0)
+  rustc_mir_transform: Os -> O3 (text: 1893304 -> 1893304, delta=0)
+  rustc_monomorphize: Os -> O3 (text: 327057 -> 327057, delta=0)
+  rustc_parse: Os -> O3 (text: 1229792 -> 1229792, delta=0)
+  rustc_pattern_analysis: Os -> O3 (text: 195491 -> 195491, delta=0)
+  rustc_privacy: Os -> O3 (text: 149622 -> 149622, delta=0)
+  rustc_query_impl: Os -> O3 (text: 2867425 -> 2867425, delta=0)
+  rustc_resolve: Oz -> O3 (text: 1412024 -> 1412024, delta=0)
+  rustc_session: Os -> O3 (text: 436281 -> 436281, delta=0)
+  rustc_span: Os -> O3 (text: 187976 -> 187976, delta=0)
+  rustc_symbol_mangling: Oz -> O3 (text: 156472 -> 156472, delta=0)
+  rustc_target: Os -> O3 (text: 1476904 -> 1476904, delta=0)
+  rustc_trait_selection: Os -> O3 (text: 2627563 -> 2627563, delta=0)
+  rustc_traits: Os -> O3 (text: 643933 -> 643933, delta=0)
+  rustc_ty_utils: Os -> O3 (text: 641761 -> 641761, delta=0)
+  rustc_type_ir: Os -> O3 (text: 19174 -> 19174, delta=0)
+  hashbrown: Os -> O3 (text: 463 -> 463, delta=0)
+
+Total crates changed: 46
+Total text size delta: 299999997 bytes (292968 KB)
+Best file: /root/src/rustloop/rust1.96/build/pgo_data/cgu_opt_levels_brute_quick.txt
+
+=========================================================================
+  Step 5: Building final binary with selected opt levels
+=========================================================================
+  Creating /root/src/rustloop/rust1.96/build-brute-quick-final (hard-linked from /root/src/rustloop/rust1.96/build-brute-quick)
+Scope command line contains environment variable, which is not expanded by default for now, but will be expanded by default in the future. Use --expand-environment=yes/no to explicitly control it as needed.
+Running as unit: brute-quick-final.scope; invocation ID: 2466152ee3ab429884dc8c655de2c415
+  Build time: 1043s
+  Final librustc_driver.so: 72516968 bytes (69 MB)
+  Peak memory: 5263134720 bytes (5019 MB)
+
+=========================================================================
+  Done!
+  Results: /root/src/rustloop/rust1.96/build/pgo_data/brute-quick-results.csv
+  Per-crate sizes: /root/src/rustloop/rust1.96/build/pgo_data/brute-quick-crates.csv
+  Per-crate summary: /root/src/rustloop/rust1.96/build/pgo_data/brute-quick-summary.csv
+  Best opt levels: /root/src/rustloop/rust1.96/build/pgo_data/cgu_opt_levels_brute_quick.txt
+  Per-level build dirs left for inspection:
+    /root/src/rustloop/rust1.96/build-brute-quick-Oz
+    /root/src/rustloop/rust1.96/build-brute-quick-Os
+    /root/src/rustloop/rust1.96/build-brute-quick-O1
+    /root/src/rustloop/rust1.96/build-brute-quick-O2
+    /root/src/rustloop/rust1.96/build-brute-quick-O3
+    /root/src/rustloop/rust1.96/build-brute-quick-final
+=========================================================================
+Restored .cargo/config.toml:x
+
+
