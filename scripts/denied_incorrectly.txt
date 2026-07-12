@@ -1,0 +1,121 @@
+=== DENIED INCORRECTLY ===
+
+These are tool calls that the plan-mode extension blocked even though they were
+perfectly safe read-only operations that should have been allowed.
+
+Session: --root-tmp--/2026-07-11T07-47-34-563Z_019f5025-6020-71f1-ad41-b3498dc5a6d3.jsonl
+  1. ls /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/ 2>/dev/null
+     Reason blocked: Contains "2>" redirect to /dev/null
+     Why incorrect: ls is in the safe list; stderr redirect to /dev/null is
+       harmless and standard practice. The destructive pattern for ">" is too
+       broad — it catches all redirects including harmless ones to /dev/null.
+
+  2. grep -rn "mouse|SGR|1000|1002|1006" .../dist/modes/interactive/ 2>/dev/null | head -10
+     Reason blocked: grep with pipe to head, plus 2>/dev/null
+     Why incorrect: grep and head are both read-only. The pipe to head is safe.
+       2>/dev/null redirect is harmless.
+
+  3. grep -n "version-check|checkForNewPiVersion|LatestPiRelease" .../version-check.js 2>/dev/null | head -20; ls .../dist/utils/
+     Reason blocked: compound command with semicolon
+     Why incorrect: Each individual command (grep, head, ls) is safe. The
+       semicolon combining them shouldn't make them unsafe.
+
+  4. grep -n "SimpleStreamOptions|throttle|throttleMs|..." .../dist/index.js 2>/dev/null | head -20
+     Reason blocked: grep with pipe to head
+     Why incorrect: Same as #2, grep and head are safe read-only tools.
+
+  5. grep -rn "message_update|emit.*update|onUpdate|throttle" .../dist/ --include="*.js" 2>/dev/null | grep -v "node_modules" | head -30
+     Reason blocked: multi-pipe grep chain
+     Why incorrect: All commands in the pipe chain (grep, grep -v, head) are
+       read-only and safe.
+
+  6. grep -rn "message_update|text_delta|thinking_delta|content_block_delta|push.*text|emit.*stream" .../dist/ --include="*.js" 2>/dev/null | grep -v "node_modules" | head -30
+     Reason blocked: Same pattern
+     Why incorrect: Same as #5.
+
+Session: --root-src-rustloop-rust1.96--/2026-07-11T10-34-46-095Z_019f50be-71cf-742d-a813-92699897b8be.jsonl
+  1. ls -la /root/src/rustloop/rust1.96/build/ 2>/dev/null | head -30
+     Reason blocked: ls with pipe
+     Why incorrect: ls and head are both safe. Pipe between safe commands
+       is still safe.
+
+  2. ls -d /root/src/rustloop/rust1.96/build-stage2-* 2>/dev/null
+     Reason blocked: 2>/dev/null redirect
+     Why incorrect: ls with glob is safe; 2>/dev/null is harmless.
+
+  3. ls /root/src/rustloop/rust1.96/build/pgo_data/cgu_opt_levels_*.txt 2>/dev/null | sort
+     Reason blocked: ls with pipe to sort
+     Why incorrect: ls and sort are both read-only and safe.
+
+Session: --root-src-rustloop-rust1.96-scripts--/2026-07-11T10-46-43-610Z_019f50c9-649a-77fa-8699-894cb23149e8.jsonl
+  (Some of the grep commands with pipes were also incorrectly blocked,
+   same pattern as above.)
+
+Session: --root--/2026-07-11T09-16-36-215Z_019f5076-e1f7-7cf7-906b-3d99e1cae7d0.jsonl
+  The vast majority of the 24 blocked commands in this session were
+  incorrectly blocked. Examples:
+
+  1. grep -n "Oz|Os|O1|O2|O3|SizeLevel|OptLevel|opt_level|OptimizationLevel"
+     .../PassWrapper.cpp 2>/dev/null | head -40
+     Reason blocked: 2>/dev/null redirect + pipe
+     Why incorrect: grep with pipe is safe; 2>/dev/null is harmless.
+
+  2. grep -rn "enum OptLevel|pub enum OptLevel|OptLevel {"
+     .../config.rs 2>/dev/null | head -10
+     Same issue.
+
+  3. ls /root/src/rustloop/rust1.96/compiler/rustc_session/src/options.rs
+     2>/dev/null && head -2000 ... | grep -n "OptLevel|..."
+     Reason blocked: ls with && and pipe
+     Why incorrect: While && makes it a compound command, all parts are
+       safe read-only operations.
+
+  4. cd /root/src/rustloop/rust1.96 && grep -rn "enum OptLevel"
+     compiler/rustc_session/src/options.rs 2>/dev/null
+     Reason blocked: cd is not in the safe first-word list
+     Why incorrect: cd is harmless; this is a standard pattern for running
+       grep from the correct directory.
+
+  5. find . -path "*/target*" -prune -o -path "*/build*" -prune -o
+     -name "*.rs" -exec grep -l "pub enum OptLevel" {} \; 2>/dev/null
+     Reason blocked: find with -exec and 2>/dev/null
+     Why incorrect: find with grep -l is a read-only search operation.
+
+  6. strings .../options.rs | grep -i "optlevel|SizeMin|SizeMax|Aggressive"
+     2>/dev/null | head -20
+     Reason blocked: pipe chain
+     Why incorrect: strings, grep, head are all safe.
+
+  7. cat .../config.rs 2>/dev/null | grep -n "OptLevel|..." | head -30
+     Reason blocked: cat with pipe
+     Why incorrect: cat and grep are safe read-only commands.
+
+  8-24. Many more grep/ls/cd compound commands with similar patterns.
+
+  Also in this session: Multiple blocked commands that used the correct
+  "read" tool instead of bash but still got blocked because the plan mode
+  extension's isSafeCommand check was too strict (e.g., treating 2>/dev/null
+  as destructive).
+
+Session: --root--/2026-07-11T08-25-12-889Z_019f5047-d5b8-710f-934c-f324b807a84.jsonl
+  (No bash blocked events in this session, only EDIT/WRITE BLOCKED false
+   positives from code comments - see below)
+
+=== FALSE POSITIVE EDIT/WRITE BLOCKED ===
+
+Several events were flagged as "EDIT/WRITE BLOCKED" but were actually just
+code READ operations where the text content happened to contain the string
+"Built-in write tools disabled" or similar from the plan-mode extension's
+source code comments. These are not real tool call denials.
+
+Files affected:
+  - --root-.opencode--/2026-07-10T17-41-17-790Z_019f4d1e-955d-7783-9750-29e882b4646b.jsonl (3)
+  - --root-tmp--/2026-07-11T07-47-34-563Z_019f5025-6020-71f1-ad41-b3498dc5a6d3.jsonl (3)
+  - --root-src-rustloop-rust1.96-scripts--/2026-07-11T10-46-43-610Z_019f50c9-649a-77fa-8699-894cb23149e8.jsonl (5)
+  - --root--/2026-07-11T08-25-12-889Z_019f5047-d5b8-710f-934c-cf324b807a84.jsonl (1)
+
+These should be disregarded as the text appeared only as content being READ,
+not as an actual tool call being denied.
+
+Total incorrectly denied (actual bash tool calls): ~22 events
+Total false positives (text content matches): ~12 events

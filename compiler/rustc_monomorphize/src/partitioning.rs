@@ -175,14 +175,20 @@ where
 
     // CGU-level optimization from -Z cgu-opt-levels=<file>.
     // The file maps CGU names (prefix match) to O3/O2/Os/Oz.
-    // CGUs not listed keep their default opt level (O3 in release).
+    // CGUs not listed get the default from -Z cgu-opt-level-default (O3).
     //
     // The per-CGU opt level is set both pre-link (cgu.set_opt_level) and
     // stored in the side channel for ThinLTO post-link (lto.rs).
     if tcx.sess.opts.unstable_opts.hot_cold_split {
         if let Some(ref opt_path) = tcx.sess.opts.unstable_opts.cgu_opt_levels {
             let opt_map = read_cgu_opt_levels(opt_path, tcx.sess);
+            let default_cgu_opt = parse_opt_level_str(
+                &tcx.sess.opts.unstable_opts.cgu_opt_level_default,
+            );
+            let mut matched_cgus = 0u32;
+            let mut total_cgus = 0u32;
             for cgu in codegen_units.iter_mut() {
+                total_cgus += 1;
                 let cgu_name = cgu.name().as_str().to_string();
                 if let Some(opt_level) = opt_map.iter()
                     .find(|(key, _)| cgu_name.starts_with(key.as_str()))
@@ -190,15 +196,40 @@ where
                 {
                     cgu.set_opt_level(Some(opt_level));
                     set_per_cgu_opt_level(cgu.name().as_str(), opt_level);
+                    matched_cgus += 1;
+                } else {
+                    cgu.set_opt_level(Some(default_cgu_opt));
+                    set_per_cgu_opt_level(cgu.name().as_str(), default_cgu_opt);
                 }
             }
-            // Warn about entries in the file that didn't match any CGU.
-            for (key, opt) in &opt_map {
-                if !codegen_units.iter().any(|cgu| cgu.name().as_str().starts_with(key.as_str())) {
-                    tcx.sess.dcx().warn(format!(
-                        "cgu_opt_levels: entry '{key} {}' did not match any CGU", opt_level_str(*opt)
-                    ));
+            let unmatched_entries: Vec<&(String, OptLevel)> = opt_map.iter()
+                .filter(|(key, _)| !codegen_units.iter().any(|cgu| cgu.name().as_str().starts_with(key.as_str())))
+                .collect();
+
+            let sidecar = opt_path.with_extension("cgu_opt_levels.unmatched.log");
+            if let Ok(mut f) = fs::File::create(&sidecar) {
+                for (key, opt) in &unmatched_entries {
+                    let _ = writeln!(f, "entry unmatched: {} {}", key, opt_level_str(*opt));
                 }
+                let unmatched_cgus = total_cgus - matched_cgus;
+                if unmatched_cgus > 0 {
+                    let _ = writeln!(f, "---");
+                    for cgu in codegen_units.iter() {
+                        let cgu_name = cgu.name().to_string();
+                        if !opt_map.iter().any(|(key, _)| cgu_name.starts_with(key.as_str())) {
+                            let _ = writeln!(f, "CGU defaulting: {} {}", cgu_name, opt_level_str(default_cgu_opt));
+                        }
+                    }
+                }
+            }
+            if !unmatched_entries.is_empty() || matched_cgus < total_cgus {
+                let unmatched_file = unmatched_entries.len();
+                let unmatched_cgus = total_cgus - matched_cgus;
+                tcx.sess.dcx().warn(format!(
+                    "cgu_opt_levels: {unmatched_file} entries unmatched, {unmatched_cgus}/{total_cgus} CGUs defaulting to {} (see {})",
+                    opt_level_str(default_cgu_opt),
+                    sidecar.display()
+                ));
             }
         }
     }
@@ -1351,6 +1382,16 @@ fn opt_level_str(opt: OptLevel) -> &'static str {
         OptLevel::Aggressive => "O3",
         OptLevel::Size => "Os",
         OptLevel::SizeMin => "Oz",
+    }
+}
+
+fn parse_opt_level_str(s: &str) -> OptLevel {
+    match s {
+        "O3" => OptLevel::Aggressive,
+        "O2" => OptLevel::More,
+        "Os" => OptLevel::Size,
+        "Oz" => OptLevel::SizeMin,
+        _ => OptLevel::Aggressive,
     }
 }
 

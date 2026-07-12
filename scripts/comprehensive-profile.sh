@@ -26,11 +26,14 @@ INSTRUMENTED_RUSTC="$ROOT/build/x86_64-unknown-linux-gnu/stage2/bin/rustc"
 if [ -x "$INSTRUMENTED_RUSTC" ]; then
     echo "  (cached, skipping)"
 else
-    RUSTFLAGS_NOT_BOOTSTRAP="-Z hot-cold-split \
+    local logfile="$PGO_DATA/build-instrumented.log"
+    RUSTFLAGS_NOT_BOOTSTRAP="-Z human-readable-cgu-names -Z hot-cold-split \
       -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels.txt \
       -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels.txt" \
     python3 x.py build --stage 2 compiler/rustc library/std \
-      --rust-profile-generate="$PGO_DIR" -j 4
+      --rust-profile-generate="$PGO_DIR" -j 4 2>&1 | tee "$logfile"
+    first_warn=$(grep -m1 "warning:" "$logfile" | grep -v "generated" || true)
+    [ -n "$first_warn" ] && echo "  Example warning: $first_warn"
 fi
 
 # ---- Step 2: Diverse training workloads ----
@@ -182,6 +185,8 @@ build_variant() {
     local flags="$2"
     local bdir="$ROOT/build-stage2-$label"
     local rustc_bin="$bdir/x86_64-unknown-linux-gnu/stage2/bin/rustc"
+    local build_log="${TMPDIR:-/tmp}/build-${label}.log"
+    local times_log="$PGO_DATA/build-variant-times.log"
 
     if [ -x "$rustc_bin" ]; then
         local bin_time
@@ -193,30 +198,43 @@ build_variant() {
                     if [ -f "$optfile" ] && [ "$(stat -c%Y "$optfile" 2>/dev/null)" -gt "$bin_time" ]; then
                         echo "  [stale] $label (opt-level file newer)"
                         rm -rf "$bdir"
-                        break 2
+                        break
                     fi
                     ;;
             esac
         done
     fi
 
+    local start_time=$(date +%s)
+
     if [ -x "$rustc_bin" ]; then
         echo "  [cached] $label"
-        return
+    else
+        echo "  Building $label... (log: $build_log)"
+        RUSTFLAGS_NOT_BOOTSTRAP="$flags" \
+            python3 x.py build --stage 2 compiler/rustc library/std \
+            --build-dir "$bdir" -j 4 2>&1 | tee "$build_log"
+        first_warn=$(grep -m1 "warning:" "$build_log" | grep -v "generated" || true)
+        [ -n "$first_warn" ] && echo "  Example warning: $first_warn"
     fi
-    echo "  Building $label..."
-    RUSTFLAGS_NOT_BOOTSTRAP="$flags" \
-        python3 x.py build --stage 2 compiler/rustc library/std \
-        --build-dir "$bdir" -j 4
+
+    local end_time=$(date +%s)
+    local dir_size=$(du -sb "$bdir" 2>/dev/null | cut -f1 || echo 0)
+    local elapsed=$((end_time - start_time))
+    [ -x "$rustc_bin" ] && elapsed="cached"
+    echo "$label ${elapsed}s ${dir_size}" >> "$times_log"
+    echo "  $label: ${elapsed}s, $(numfmt --to=iec "$dir_size" 2>/dev/null || echo "$dir_size bytes")"
 }
 
-build_variant "pgsos" "-Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_sos.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_sos.txt"
-build_variant "pgso" "-Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_1x.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_1x.txt"
-build_variant "pgso10" "-Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_10x.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_10x.txt"
-build_variant "pgso100" "-Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_100x.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_100x.txt"
-build_variant "pgso-o3" "-Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_o3.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_o3.txt"
+build_variant "pgsos" "-Z human-readable-cgu-names -Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_sos.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_sos.txt"
+build_variant "pgso" "-Z human-readable-cgu-names -Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_1x.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_1x.txt"
+build_variant "Def_O3" "-Z human-readable-cgu-names -Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_1x.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_1x.txt -Z cgu-opt-level-default=O3 -Z fn-opt-level-default=O3"
+build_variant "pgso10" "-Z human-readable-cgu-names -Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_10x.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_10x.txt"
+build_variant "pgso100" "-Z human-readable-cgu-names -Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_100x.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_100x.txt"
+build_variant "pgso-o3" "-Z human-readable-cgu-names -Z hot-cold-split -Z cgu-opt-levels=$ROOT/build/pgo_data/cgu_opt_levels_o3.txt -Z fn-opt-levels=$ROOT/build/pgo_data/fn_opt_levels_o3.txt"
 build_variant "o3" "-C opt-level=3"
 build_variant "os" "-C opt-level=s"
+build_variant "oz" "-C opt-level=z"
 build_variant "base" ""
 
 # ---- Step 6: Benchmark (round-robin) ----
@@ -252,7 +270,7 @@ label_rustc() {
     esac
 }
 
-for label in stock o3 pgso-o3 pgsos pgso pgso10 pgso100 os base; do
+for label in stock o3 oz pgso-o3 pgsos pgso Def_O3 pgso10 pgso100 os base; do
     add_bench "$label" "$(label_rustc "$label")" "$(label_so "$label")"
 done
 
@@ -291,7 +309,7 @@ done
 # ---- Step 7: Size comparison ----
 echo ""
 echo "=== Step 7: Sizes ==="
-for label in stock pgsos pgso pgso10 pgso100 pgso-o3 o3 os base; do
+for label in stock pgsos pgso Def_O3 pgso10 pgso100 pgso-o3 o3 oz os base; do
     case "$label" in
         stock) so=$(find /root/.rustup/toolchains/1.96.1-x86_64-unknown-linux-gnu/lib/ -maxdepth 1 -name 'librustc_driver-*.so' | head -1) ;;
         *) so="$ROOT/build-stage2-$label/x86_64-unknown-linux-gnu/stage2-rustc/x86_64-unknown-linux-gnu/release/librustc_driver.so" ;;

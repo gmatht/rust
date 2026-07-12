@@ -7,9 +7,16 @@ profiler = true
 [llvm]
 download-ci-llvm = true
 
-# Optimize stage1 libstd to match system rustc size.
-# The "compiler" profile enables debug assertions which bloat libstd by ~322K.
-# ThinLTO + single CGU reduces libstd size significantly.
+# codegen-units = 1 forces LLVM to optimize the entire crate as one unit
+# instead of splitting across 16 (Cargo default) or 256 (incremental) threads.
+# This enables better inter-procedural optimization (inlining, const prop)
+# at the cost of 2-4x longer codegen. The runtime win for rustc is ~5-15%.
+#
+# Upstream CI applies codegen-units=1 only for stage 2 (the distributed
+# compiler), inherited from Docker/CI config: all tier-1 dist builds use
+# it (x86_64/aarch64 Linux/macOS, x86_64 MSVC). Stage 1 in CI uses the
+# default (16 units) since it's just a bootstrap tool. We set it globally
+# here, so stage 1 pays the compile cost too.
 [rust]
 channel = "nightly"
 lto = "fat"

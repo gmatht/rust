@@ -3,12 +3,12 @@ set -euo pipefail
 
 TOOLCHAIN_NAME="pgso-almalinux8"
 TC_DIR="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN_NAME"
-RELEASE_URL="https://github.com/gmatht/rust/releases/download/v1.96.1-pgso"
+RELEASE_URL="https://github.com/gmatht/rust/releases/download/v1.96.1-pgso-binary"
 TARBALL="release-almalinux8.tar.gz"
 STOCK_TC="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/1.96.1-x86_64-unknown-linux-gnu"
 NIGHTLY_TC="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/nightly-x86_64-unknown-linux-gnu"
 
-GEN_SCRIPT="$TC_DIR/share/generate_opt_levels.py"
+GEN_SCRIPT_URL="https://raw.githubusercontent.com/gmatht/rust/v1.96-pgso/src/tools/generate_opt_levels.py"
 
 usage() {
     cat <<'EOF'
@@ -137,14 +137,16 @@ ensure_toolchain() {
         fi
     fi
 
-    # Copy share/ (generate_opt_levels.py)
+    # Copy share/ (generate_opt_levels.py) from tarball
     if [[ -d "$EXTRACT/share" ]]; then
         cp -r "$EXTRACT/share" "$TC_DIR/"
     fi
-    # Always prefer the local copy over the tarball's (may have updates)
-    local_gen="$(dirname "$0")/src/tools/generate_opt_levels.py"
-    if [[ -f "$local_gen" ]]; then
-        cp "$local_gen" "$TC_DIR/share/generate_opt_levels.py"
+    # Override with latest from GitHub origin/v1.96-pgso
+    mkdir -p "$TC_DIR/share"
+    if command -v curl &>/dev/null; then
+        curl -sL "$GEN_SCRIPT_URL" -o "$TC_DIR/share/generate_opt_levels.py" 2>/dev/null || true
+    elif command -v wget &>/dev/null; then
+        wget -q "$GEN_SCRIPT_URL" -O "$TC_DIR/share/generate_opt_levels.py" 2>/dev/null || true
     fi
 
     # Copy host stdlib (matching build, needed for build scripts)
@@ -228,7 +230,7 @@ fi
 # ---- Generate opt-level lists from profile data ----
 echo "[3/4] Generating opt-level lists"
 LD_LIBRARY_PATH="$TC_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-    python3 "$GEN_SCRIPT" \
+    python3 "$TC_DIR/share/generate_opt_levels.py" \
     --profdata "$PROFDATA" \
     --llvm-profdata "$llvm_profdata" \
     --fn-opt-levels "$abs_out/fn_opt_levels.txt" \

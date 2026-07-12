@@ -1,68 +1,37 @@
 #!/usr/bin/env bash
-# Brute-force CGU opt-level optimizer.
-# For each CGU entry not at O3, tries every higher opt level, builds,
-# measures binary size, and keeps the best (smallest) configuration.
-# Logs results to CSV for resume and analysis.
+# Brute-force CGU opt-level optimizer (LTO=thin variant).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PGO_DATA="$ROOT/build/pgo_data"
-BUILD_DIR="$ROOT/build-brute"
+PGO_DATA="$ROOT/build/pgo_data/thin"
+BUILD_DIR="$ROOT/build-brute-thin"
 JOBS=4
-PARALLEL_CANDIDATES=1
+CONFIG="config-thin.toml"
 
-OPT_FILE_BEST="$PGO_DATA/cgu_opt_levels_brute.txt"
-OPT_FILE_WORK="$PGO_DATA/cgu_opt_levels_work.txt"
-FN_FILE="$PGO_DATA/fn_opt_levels_1x.txt"
-RESULTS_LOG="$PGO_DATA/brute-results.csv"
-STATE_FILE="$PGO_DATA/brute-state.txt"
-BUILD_LOG_DIR="/tmp/brute-logs"
+OPT_FILE_BEST="$PGO_DATA/cgu_opt_levels_thin.txt"
+OPT_FILE_WORK="$PGO_DATA/cgu_opt_levels_thin_work.txt"
+FN_FILE="$ROOT/build/pgo_data/fn_opt_levels_1x.txt"
+RESULTS_LOG="$PGO_DATA/thin-results.csv"
+STATE_FILE="$PGO_DATA/thin-state.txt"
+BUILD_LOG_DIR="/tmp/brute-logs-thin"
 mkdir -p "$BUILD_LOG_DIR"
 
-STOCK_CARGO="$(rustup which cargo --toolchain 1.96.1)"
 mkdir -p "$PGO_DATA"
 cd "$ROOT"
 
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -P|--parallel)
-            PARALLEL_CANDIDATES="$2"
-            shift 2
-            ;;
-        -h|--help)
-            echo "Usage: $0 [-P N|--parallel N]"
-            echo "  -P N    Build up to N candidates simultaneously (default: 1 = sequential)."
-            echo "          When N > 1, higher opt-levels are tried simultaneously for each crate."
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $1"
-            echo "Usage: $0 [-P N|--parallel N]"
-            exit 1
-            ;;
-    esac
-done
-
-# Validate PARALLEL_CANDIDATES
-if ! [[ "$PARALLEL_CANDIDATES" =~ ^[0-9]+$ ]] || [ "$PARALLEL_CANDIDATES" -lt 1 ]; then
-    echo "ERROR: -P/--parallel must be a positive integer" >&2
-    exit 1
-fi
-
 echo "========================================================================="
-echo "  Brute-force CGU Opt-Level Optimizer"
+echo "  Brute-force CGU Opt-Level Optimizer (LTO=thin)"
 echo "========================================================================="
 echo "ROOT: $ROOT"
 echo "BUILD_DIR: $BUILD_DIR"
+echo "CONFIG: $CONFIG"
 echo "JOBS: $JOBS"
-echo "Parallel candidates: $PARALLEL_CANDIDATES"
 echo ""
 
 # Seed from PGSO baseline
 if [ ! -f "$OPT_FILE_BEST" ]; then
-    cp "$PGO_DATA/cgu_opt_levels_1x.txt" "$OPT_FILE_BEST"
-    echo "Seeded from cgu_opt_levels_1x.txt"
+    cp "$PGO_DATA/cgu_opt_levels_thin.txt" "$OPT_FILE_BEST"
+    echo "Seeded from cgu_opt_levels_thin.txt"
 fi
 
 if [ ! -f "$RESULTS_LOG" ]; then
@@ -80,7 +49,6 @@ find_rlibs() {
     find "$BUILD_DIR/x86_64-unknown-linux-gnu/stage2-rustc" -name "lib${crate}-*.rlib" 2>/dev/null
 }
 
-# Find source file for an in-tree crate
 find_src() {
     local crate="$1"
     for p in "$ROOT/compiler/$crate/src/lib.rs" "$ROOT/compiler/$crate/src/main.rs" \
@@ -90,7 +58,6 @@ find_src() {
     return 1
 }
 
-# Force rebuild of a crate by touching its source (if in-tree) or deleting rlibs
 force_rebuild() {
     local crate="$1"
     local src
@@ -107,17 +74,17 @@ force_rebuild() {
 
 do_build() {
     local optfile="$1"
-    local extra="$2"  # e.g. "compiler/rustc library/std" or just "compiler/rustc"
+    local extra="$2"
     local logfile="$BUILD_LOG_DIR/$(basename $optfile .txt)-$(date +%s).log"
     echo "  Building... (log: $logfile)"
-    # Use CARGO_INCREMENTAL=1 so subsequent iterations only recompile changed crates
     export CARGO_INCREMENTAL=1
     local rc
     RUSTFLAGS_NOT_BOOTSTRAP="-Z human-readable-cgu-names -Z hot-cold-split \
       -Z cgu-opt-levels=$optfile \
       -Z fn-opt-levels=$FN_FILE -Z fn-opt-level-default=Oz" \
         python3 x.py build --stage 2 $extra \
-        --build-dir "$BUILD_DIR" -j "$JOBS" > "$logfile" 2>&1 && rc=0 || rc=$?
+        --build-dir "$BUILD_DIR" -j "$JOBS" --config "$CONFIG" \
+        --set rust.lto='off' > "$logfile" 2>&1 && rc=0 || rc=$?
     tail -3 "$logfile"
     if [ "$rc" -ne 0 ]; then
         echo "  ERROR: build exited with code $rc (see $logfile)" >&2
@@ -205,7 +172,6 @@ for ((i = RESUME; i < TOTAL; i++)); do
     echo "========================================================================="
 
     for new_opt in "${candidates[@]}"; do
-        # Build the work file: copy best, change one entry
         cp "$OPT_FILE_BEST" "$OPT_FILE_WORK"
         esc=$(echo "$crate" | sed 's/[\/&]/\\&/g')
         sed -i "s/^${esc} .*/${crate} ${new_opt}/" "$OPT_FILE_WORK"
@@ -213,10 +179,8 @@ for ((i = RESUME; i < TOTAL; i++)); do
         echo ""
         echo "--- Trying $crate: $current_opt -> $new_opt ---"
 
-        # Force rebuild of this crate
         force_rebuild "$crate"
 
-        # Build just the compiler (no library/std — saves ~50s per iteration)
         start_ts=$(date +%s)
         if ! do_build "$OPT_FILE_WORK" "compiler/rustc"; then
             echo "  Build failed, skipping"
@@ -231,7 +195,6 @@ for ((i = RESUME; i < TOTAL; i++)); do
         log_result "$end_ts" "$((i+1))" "$crate" "$current_opt" "$new_opt" \
             "$build_time" "$rlib_size" "$final_size"
 
-        # Monotonic improvement: only accept if smaller or equal (tie → keep higher opt)
         if [ "$final_size" -lt "$best_for_entry" ] && [ "$final_size" -ne 0 ]; then
             old_best=$best_for_entry
             best_for_entry=$final_size
@@ -240,7 +203,6 @@ for ((i = RESUME; i < TOTAL; i++)); do
             cp "$OPT_FILE_WORK" "$OPT_FILE_BEST"
             echo "  NEW BEST: $crate $new_opt (final $final_size, was $old_best)"
         elif [ "$final_size" -eq "$best_for_entry" ] && [ "$final_size" -ne 0 ]; then
-            # Tie — keep whichever is more speed-optimized (higher opt level)
             order_old=$(printf "%s\n" "Oz" "Os" "O2" "O3" | grep -n "$best_for_entry_opt" | cut -d: -f1)
             order_new=$(printf "%s\n" "Oz" "Os" "O2" "O3" | grep -n "$new_opt" | cut -d: -f1)
             if [ "$order_new" -gt "$order_old" ]; then
@@ -263,7 +225,16 @@ echo ""
 echo "=== Building final binary with full library/std ==="
 cp "$OPT_FILE_BEST" "$OPT_FILE_WORK"
 force_rebuild "$(head -1 "$OPT_FILE_BEST" | awk '{print $1}')"
-do_build "$OPT_FILE_WORK" "compiler/rustc library/std"
+logfile="$BUILD_LOG_DIR/final-$(date +%s).log"
+echo "  Building... (log: $logfile)"
+RUSTFLAGS_NOT_BOOTSTRAP="-Z human-readable-cgu-names -Z hot-cold-split \
+  -Z cgu-opt-levels=$OPT_FILE_WORK \
+  -Z fn-opt-levels=$FN_FILE -Z fn-opt-level-default=Oz" \
+  python3 x.py build --stage 2 compiler/rustc library/std \
+  --build-dir "$BUILD_DIR" -j "$JOBS" --config "$CONFIG" \
+  > "$logfile" 2>&1 || {
+    echo "  ERROR: final build failed" >&2; tail -5 "$logfile"
+  }
 
 so=$(so_path)
 if [ -f "$so" ]; then

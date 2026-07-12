@@ -630,10 +630,13 @@ pub(crate) fn llfn_attrs_from_instance<'ll, 'tcx>(
                 let crate_name = tcx.crate_name(def_id.krate);
                 let crate_prefixed = format!("{}::{}", crate_name, fn_name);
 
+                let fn_default = parse_fn_opt_level_default(
+                    &tcx.sess.opts.unstable_opts.fn_opt_level_default,
+                );
                 let opt = opt_map.1.get(&fn_name)
                     .or_else(|| opt_map.1.get(&crate_prefixed))
                     .copied()
-                    .unwrap_or(OptLevel::SizeMin);
+                    .unwrap_or(fn_default);
 
                 match opt {
                     OptLevel::SizeMin => {
@@ -698,4 +701,15 @@ fn read_fn_opt_levels(
 
 fn wasm_import_module(tcx: TyCtxt<'_>, id: DefId) -> Option<&String> {
     tcx.wasm_import_module_map(id.krate).get(&id)
+}
+
+/// Parse the `-Z fn-opt-level-default` flag value into an `OptLevel`.
+fn parse_fn_opt_level_default(s: &str) -> OptLevel {
+    match s {
+        "O3" => OptLevel::Aggressive,
+        "O2" => OptLevel::More,
+        "Os" => OptLevel::Size,
+        "Oz" => OptLevel::SizeMin,
+        _ => OptLevel::SizeMin,
+    }
 }

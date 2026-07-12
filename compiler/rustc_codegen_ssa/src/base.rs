@@ -1,5 +1,8 @@
 use std::cmp;
 use std::collections::BTreeSet;
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,7 +12,7 @@ use rustc_ast::expand::allocator::{
     ALLOC_ERROR_HANDLER, ALLOCATOR_METHODS, AllocatorKind, AllocatorMethod, AllocatorMethodInput,
     AllocatorTy,
 };
-use rustc_data_structures::fx::{FxHashMap, FxIndexSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
 use rustc_data_structures::profiling::{get_resident_set_size, print_time_passes_entry};
 use rustc_data_structures::sync::{IntoDynSyncSend, par_map};
 use rustc_data_structures::unord::UnordMap;
@@ -838,6 +841,73 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
 
     ongoing_codegen.codegen_finished(tcx);
 
+    // Report unmatched fn-opt-levels entries.
+    if tcx.sess.opts.unstable_opts.hot_cold_split {
+        if let Some(ref opt_path) = tcx.sess.opts.unstable_opts.fn_opt_levels {
+            let entries = read_fn_opt_levels_entries(opt_path, tcx.sess);
+            if !entries.is_empty() {
+                let fn_default = parse_opt_level_str(
+                    &tcx.sess.opts.unstable_opts.fn_opt_level_default,
+                );
+                let mut seen_fns = FxHashSet::default();
+                let mut unique_fn_count = 0u32;
+                for cgu in &codegen_units {
+                    for (mono_item, _) in cgu.items() {
+                        if let MonoItem::Fn(instance) = mono_item {
+                            let def_id = instance.def_id();
+                            let fn_name = rustc_middle::ty::print::with_no_trimmed_paths!(
+                                tcx.def_path_str(def_id)
+                            );
+                            let crate_name = tcx.crate_name(def_id.krate);
+                            let crate_prefixed = format!("{}::{}", crate_name, fn_name);
+                            seen_fns.insert(fn_name);
+                            seen_fns.insert(crate_prefixed);
+                            unique_fn_count += 1;
+                        }
+                    }
+                }
+                let unmatched_entries: Vec<&(String, String)> = entries.iter()
+                    .filter(|(name, _)| !seen_fns.contains(name))
+                    .collect();
+                let matched_fns: Vec<_> = {
+                    #[allow(rustc::potential_query_instability)]
+                    let mut seen: Vec<&String> = seen_fns.iter().collect();
+                    seen.sort();
+                    seen.into_iter().filter(|fn_name| {
+                        entries.iter().any(|(entry_name, _)| entry_name == *fn_name)
+                    }).collect::<Vec<_>>()
+                };
+                let matched_fn_count = matched_fns.len() as u32;
+                // seen_fns deduplicates, so unique_fn_count is the true total
+                let unmatched_fn_count = unique_fn_count.saturating_sub(matched_fn_count);
+
+                let sidecar = opt_path.with_extension("fn_opt_levels.unmatched.log");
+                if let Ok(mut f) = fs::File::create(&sidecar) {
+                    for (name, opt) in &unmatched_entries {
+                        let _ = writeln!(f, "entry unmatched: {} {}", name, opt);
+                    }
+                    if unmatched_fn_count > 0 {
+                        let _ = writeln!(f, "---");
+                        #[allow(rustc::potential_query_instability)]
+                        let unsorted: Vec<&String> = seen_fns.iter().collect();
+                        let mut seen_sorted = unsorted;
+                        seen_sorted.sort();
+                        for fn_name in seen_sorted {
+                            if !entries.iter().any(|(entry_name, _)| entry_name == fn_name) {
+                                let _ = writeln!(f, "fn defaulting: {} {}", fn_name, fn_default);
+                            }
+                        }
+                    }
+                }
+                tcx.sess.dcx().warn(format!(
+                    "fn_opt_levels: {} entries unmatched, {unmatched_fn_count}/{unique_fn_count} functions defaulting to {fn_default} (see {})",
+                    unmatched_entries.len(),
+                    sidecar.display()
+                ));
+            }
+        }
+    }
+
     // Since the main thread is sometimes blocked during codegen, we keep track
     // -Ztime-passes output manually.
     if tcx.sess.opts.unstable_opts.time_passes {
@@ -1133,4 +1203,49 @@ pub fn determine_cgu_reuse<'tcx>(tcx: TyCtxt<'tcx>, cgu: &CodegenUnit<'tcx>) -> 
     } else {
         CguReuse::No
     }
+}
+
+fn parse_opt_level_str(s: &str) -> &'static str {
+    match s {
+        "O3" => "O3",
+        "O2" => "O2",
+        "Os" => "Os",
+        "Oz" => "Oz",
+        _ => "O3",
+    }
+}
+
+/// Read the fn-opt-levels file entries for unmatched-entry reporting.
+/// Returns `(name, opt_level_str)` pairs for each valid line.
+fn read_fn_opt_levels_entries(path: &Path, sess: &Session) -> Vec<(String, String)> {
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            sess.dcx().warn(format!("failed to open fn_opt_levels file '{}': {}", path.display(), e));
+            return Vec::new();
+        }
+    };
+    let mut entries = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let l = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let t = l.trim().to_owned();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = t.split_whitespace().collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let name = parts[..parts.len() - 1].join(" ");
+        let opt_str = parts[parts.len() - 1];
+        match opt_str {
+            "O3" | "O2" | "Os" | "Oz" => {}
+            _ => continue,
+        }
+        entries.push((name, opt_str.to_string()));
+    }
+    entries
 }

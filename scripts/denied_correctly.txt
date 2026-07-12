@@ -1,0 +1,49 @@
+=== DENIED CORRECTLY ===
+
+These are tool calls that the plan-mode extension correctly blocked because they
+contained destructive commands or unsafe patterns.
+
+Session: --root-tmp--/2026-07-11T07-47-34-563Z_019f5025-6020-71f1-ad41-b3498dc5a6d3.jsonl
+  1. Compound command with ls, echo, and head via pipes/||/; 
+     (contains unsafe conditional chains and output redirects)
+  2. grep with pipes to head, followed by semicolon and another ls
+     (compound command with multiple statements)
+  3. grep -rn with pipes to head
+     (piped grep is not a clean safe match)
+  4. wl command (not in safe list) with semicolons and grep
+     (wl is not an allowed command)
+  5. grep with complex piping, multiple | and -v
+     (complex piped chain, not first-word safe)
+  6. grep -rn with --include piping to grep -v and head
+     (complex piped chain)
+  7. grep -rn with --include piping to grep -v and head
+     (complex piped chain, same pattern as above)
+  8-12. Various compound commands with semicolons, pipes, and 
+     non-allowlisted first commands
+
+Session: --root-src-rustloop-rust1.96-scripts--/2026-07-11T10-46-43-610Z_019f50c9-649a-77fa-8699-894cb23149e8.jsonl
+  1. wl command (not in safe list) combined with grep via semicolon
+  2. grep with complex pattern and escaped pipes, redirected to file
+  3. Multiple grep/find commands with complex piping
+
+Session: --root--/2026-07-11T09-16-36-215Z_019f5076-e1f7-7cf7-906b-3d99e1cae7d0.jsonl
+  1. cd && grep compound command (cd not in safe first-word list)
+  2. Various cd && grep patterns
+  3. for loop in bash
+  4. find with -exec (not in safe patterns)
+  5. strings with grep pipe
+  6. cat piped to grep
+  7. Compound commands with echo and variable assignments
+  8-24. Various grep/find/ls with redirects (2>/dev/null) that
+     trigger the redirect destructive pattern, OR compound commands
+     whose first word is not in the safe list
+
+Session: --root-src-rustloop-rust1.96--/2026-07-11T10-34-46-095Z_019f50be-71cf-742d-a813-92699897b8be.jsonl
+  1. ls piped to head (starts with ls but has pipe)
+     (borderline - the safe pattern requires first WORD match, pipe changes this)
+
+Total correctly denied: ~30 events
+
+NOTE: Some commands in this list are only "correct" under the current
+    restrictive rules (first-word-only allowlist, no redirects allowed).
+    A more refined system would allow many of these.
