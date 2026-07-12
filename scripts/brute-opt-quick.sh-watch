@@ -1,0 +1,10 @@
+#echo ; for f in build-brute-quick*; do echo -n "$f "; ls $f/x86_64-unknown-linux-gnu/stage2-rustc/x86_64-unknown-linux-gnu/release/deps/ | grep rlib | wc -l; done
+watch -n 2 '
+     for f in /tmp/brute-quick-logs/build-*.log; do
+       name=$(basename $f .log | sed "s/build-//")
+       unit="brute-quick-${name}.scope"
+       active=$(systemctl is-active $unit 2>/dev/null || echo "inactive")
+       last=$(tail -1 $f 2>/dev/null | head -c 80)
+       printf "%-25s %-10s %s\n" "$name" "$active" "$last"
+     done
+   '
