@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# brute-opt-quick.sh-timestamps — Record crate-level build timestamps.
+#
+# Run alongside brute-opt-quick.sh to capture when each crate starts
+# building for every level.  Post-process the output to reconstruct
+# per-crate and per-compiler durations.
+#
+# Usage:
+#   ./scripts/brute-opt-quick.sh --size-tweaks ... &
+#   TIMESTAMPS_OUT=/tmp/my-ts.csv ./scripts/brute-opt-quick.sh-timestamps
+#
+# Output CSV columns:
+#   build_name    – e.g. "O2", "Oz", "O3-no-unroll"
+#   event_type    – build_start | crate_start | build_end | build_fail
+#   crate_name    – the crate (empty for build_start / build_end / build_fail)
+#   unix_ts       – seconds since epoch  (date +%s)
+#
+# Each crate's duration = unix_ts of next event − unix_ts of its crate_start.
+# (Jobs are serial per build: PARALLEL_JOBS=1, so crates compile sequentially.)
+# Full compiler duration = build_end.ts − build_start.ts.
+#
+# Example duration reconstruction:
+#   build_end.ts - build_start.ts          → total wall time for that level
+#   crate_start[i+1].ts - crate_start[i].ts → duration of crate[i]
+#
+set -euo pipefail
+
+LOG_DIR="${LOG_DIR:-/tmp/brute-quick-logs}"
+OUTPUT="${TIMESTAMPS_OUT:-/tmp/brute-quick-timestamps.csv}"
+POLL_INTERVAL="${POLL_INTERVAL:-2}"
+
+mkdir -p "$(dirname "$OUTPUT")"
+
+if [ ! -f "$OUTPUT" ]; then
+    echo "build_name,event_type,crate_name,unix_ts" > "$OUTPUT"
+fi
+
+echo "Recording timestamps to $OUTPUT"
+echo "Watching $LOG_DIR (poll every ${POLL_INTERVAL}s) ..."
+
+# Associative arrays for per-build state
+declare -A started
+declare -A finished
+declare -A last_seen_crate
+declare -A last_pos
+
+record() {
+    local build="$1" event="$2" crate="$3"
+    printf '%s,%s,%s,%s\n' "$build" "$event" "$crate" "$(date +%s)" >> "$OUTPUT"
+}
+
+while true; do
+    for logfile in "$LOG_DIR"/build-*.log; do
+        [ -f "$logfile" ] || continue
+
+        # Derive short build name from filename (build-Oz.log → Oz)
+        name="$(basename "$logfile" .log | sed 's/^build-//')"
+
+        # ── detect build_start ──────────────────────────────────────
+        if [ -z "${started[$name]:-}" ]; then
+            started[$name]=1
+            record "$name" "build_start" ""
+        fi
+
+        # Skip if we've already emitted an end event for this build
+        [ -n "${finished[$name]:-}" ] && continue
+
+        # ── read new lines since last poll ──────────────────────────
+        pos=0
+        [ -n "${last_pos[$name]:-}" ] && pos="${last_pos[$name]}"
+
+        file_size=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
+        if [ "$file_size" -lt "$pos" ]; then
+            pos=0
+        fi
+
+        if [ "$file_size" -gt "$pos" ]; then
+            new_content=$(dd if="$logfile" bs=1 skip="$pos" 2>/dev/null || true)
+            last_pos[$name]="$file_size"
+
+            while IFS= read -r line; do
+                # ── detect crate_start from "Compiling <crate>" ─────
+                if [[ "$line" =~ ^[[:space:]]*Compiling[[:space:]]+([^[:space:]]+) ]]; then
+                    crate="${BASH_REMATCH[1]}"
+                    if [ "${last_seen_crate[$name]:-}" != "$crate" ]; then
+                        record "$name" "crate_start" "$crate"
+                        last_seen_crate[$name]="$crate"
+                    fi
+                fi
+
+                # ── detect build_end / build_fail ───────────────────
+                if [[ "$line" =~ ^[[:space:]]*Finished ]]; then
+                    if [ -z "${finished[$name]:-}" ]; then
+                        record "$name" "build_end" ""
+                        finished[$name]=1
+                    fi
+                fi
+
+                if [[ "$line" =~ ^error[\[:] ]] || [[ "$line" =~ ^[[:space:]]*error:[[:space:]]+aborting ]]; then
+                    if [ -z "${finished[$name]:-}" ]; then
+                        record "$name" "build_fail" ""
+                        finished[$name]=1
+                    fi
+                fi
+            done <<< "$new_content"
+        fi
+
+        # ── detect build_end via scope inactivity (fallback) ────────
+        if [ -z "${finished[$name]:-}" ]; then
+            unit="brute-quick-${name}.scope"
+            if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+                mtime=$(stat -c%Y "$logfile" 2>/dev/null || echo 0)
+                now=$(date +%s)
+                if [ "$mtime" -gt 0 ] && [ $((now - mtime)) -gt 3 ]; then
+                    if grep -q "^error\[\|^error:\|error: aborting" "$logfile" 2>/dev/null; then
+                        record "$name" "build_fail" ""
+                    else
+                        record "$name" "build_end" ""
+                    fi
+                    finished[$name]=1
+                fi
+            fi
+        fi
+    done
+
+    sleep "$POLL_INTERVAL"
+done

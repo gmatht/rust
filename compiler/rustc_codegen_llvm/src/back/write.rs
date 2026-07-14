@@ -574,10 +574,10 @@ pub(crate) unsafe fn llvm_optimize(
     let print_before_enzyme = config.autodiff.contains(&config::AutoDiff::PrintModBefore);
     let print_after_enzyme = config.autodiff.contains(&config::AutoDiff::PrintModAfter);
     let print_passes = config.autodiff.contains(&config::AutoDiff::PrintPasses);
-    let merge_functions;
-    let unroll_loops;
-    let vectorize_slp;
-    let vectorize_loop;
+    let mut merge_functions;
+    let mut unroll_loops;
+    let mut vectorize_slp;
+    let mut vectorize_loop;
 
     // When we build rustc with enzyme/autodiff support, we want to postpone size-increasing
     // optimizations until after differentiation. Our pipeline is thus: (opt + enzyme), (full opt).
@@ -598,6 +598,22 @@ pub(crate) unsafe fn llvm_optimize(
         merge_functions = config.merge_functions;
         vectorize_slp = config.vectorize_slp;
         vectorize_loop = config.vectorize_loop;
+
+        // Per-CGU tunables override (from -Z per-cgu-tunables=<file>).
+        if let Some(tunables) = config::get_per_cgu_tunables(&module.name) {
+            if let Some(v) = tunables.unroll {
+                unroll_loops = v;
+            }
+            if let Some(v) = tunables.slp_vectorize {
+                vectorize_slp = v;
+            }
+            if let Some(v) = tunables.loop_vectorize {
+                vectorize_loop = v;
+            }
+            if let Some(v) = tunables.merge_functions {
+                merge_functions = v;
+            }
+        }
     }
     trace!(?unroll_loops, ?vectorize_slp, ?vectorize_loop, ?run_enzyme);
     if thin_lto_buffer.is_some() {

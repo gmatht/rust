@@ -119,7 +119,7 @@ use rustc_middle::ty::{self, InstanceKind, TyCtxt};
 use rustc_middle::util::Providers;
 use rustc_session::Session;
 use rustc_session::CodegenUnits;
-use rustc_session::config::{DumpMonoStatsFormat, SwitchWithOptPath, set_per_cgu_opt_level};
+use rustc_session::config::{DumpMonoStatsFormat, SwitchWithOptPath, set_per_cgu_opt_level, PerCguTunables};
 use rustc_span::Symbol;
 use rustc_target::spec::SymbolVisibility;
 use tracing::debug;
@@ -207,7 +207,7 @@ where
                 .collect();
 
             let sidecar = opt_path.with_extension("cgu_opt_levels.unmatched.log");
-            if let Ok(mut f) = fs::File::create(&sidecar) {
+            if let Ok(mut f) = fs::OpenOptions::new().append(true).create(true).open(&sidecar) {
                 for (key, opt) in &unmatched_entries {
                     let _ = writeln!(f, "entry unmatched: {} {}", key, opt_level_str(*opt));
                 }
@@ -230,6 +230,23 @@ where
                     opt_level_str(default_cgu_opt),
                     sidecar.display()
                 ));
+            }
+        }
+    }
+
+    // Per-CGU codegen tunables from -Z per-cgu-tunables=<file>.
+    // The file maps CGU names to unroll/slp/loop/merge booleans (format:
+    // `cgu_name unroll=true|false slp=true|false loop=true|false merge=true|false`).
+    // Missing fields default to the per-CGU or global opt-level-based default.
+    if let Some(ref tunables_path) = tcx.sess.opts.unstable_opts.per_cgu_tunables {
+        let tunables_map = read_cgu_tunables(tunables_path, tcx.sess);
+        for cgu in codegen_units.iter() {
+            let cgu_name = cgu.name().as_str().to_string();
+            if let Some(tunables) = tunables_map.iter()
+                .find(|(key, _)| cgu_name.starts_with(key.as_str()))
+                .map(|(_, t)| t.clone())
+            {
+                rustc_session::config::set_per_cgu_tunables(cgu.name().as_str(), tunables);
             }
         }
     }
@@ -1397,6 +1414,57 @@ fn parse_opt_level_str(s: &str) -> OptLevel {
 
 /// Read the CGU opt-level file. Each non-empty, non-comment line is
 /// `cgu_name O3|O2|Os|Oz`. CGU names are matched by prefix.
+fn read_cgu_tunables(path: &Path, sess: &Session) -> Vec<(String, PerCguTunables)> {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            sess.dcx().warn(format!("failed to open per_cgu_tunables file '{}': {}", path.display(), e));
+            return Vec::new();
+        }
+    };
+    let mut entries = Vec::new();
+    for (lineno, line) in BufReader::new(file).lines().enumerate() {
+        let l = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let t = l.trim().to_owned();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = t.split_whitespace().collect();
+        if parts.len() < 2 {
+            sess.dcx().warn(format!("per_cgu_tunables:{}: expected 'name key=val key=val ...', got '{}'", lineno + 1, t));
+            continue;
+        }
+        let name = parts[0].to_string();
+        let mut tunables = PerCguTunables::default();
+        for kv in &parts[1..] {
+            if let Some((key, val)) = kv.split_once('=') {
+                let b = match val {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        sess.dcx().warn(format!("per_cgu_tunables:{}: expected 'true' or 'false' for '{}', got '{}'", lineno + 1, key, val));
+                        continue;
+                    }
+                };
+                match key {
+                    "unroll" => tunables.unroll = Some(b),
+                    "slp" | "slp-vectorize" => tunables.slp_vectorize = Some(b),
+                    "loop" | "loop-vectorize" => tunables.loop_vectorize = Some(b),
+                    "merge" | "merge-functions" => tunables.merge_functions = Some(b),
+                    _ => sess.dcx().warn(format!("per_cgu_tunables:{}: unknown key '{}', expected unroll|slp|loop|merge", lineno + 1, key)),
+                }
+            } else {
+                sess.dcx().warn(format!("per_cgu_tunables:{}: expected 'key=value' pair, got '{}'", lineno + 1, kv));
+            }
+        }
+        entries.push((name, tunables));
+    }
+    entries
+}
+
 fn read_cgu_opt_levels(path: &Path, sess: &Session) -> Vec<(String, OptLevel)> {
     let file = match File::open(path) {
         Ok(f) => f,

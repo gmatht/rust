@@ -3428,3 +3428,37 @@ pub fn get_per_cgu_opt_level(cgu_name: &str) -> Option<OptLevel> {
         .and_then(|m| m.lock().ok())
         .and_then(|guard| guard.get(cgu_name).copied())
 }
+
+// ---------------------------------------------------------------------------
+// Per-CGU codegen tunables (unroll, vectorize, merge-functions)
+// ---------------------------------------------------------------------------
+
+/// Per-CGU overrides for LLVM codegen options.
+#[derive(Clone, Debug, Default)]
+pub struct PerCguTunables {
+    /// Override loop unrolling (None = use opt-level default).
+    pub unroll: Option<bool>,
+    /// Override SLP vectorization (None = use codegen config default).
+    pub slp_vectorize: Option<bool>,
+    /// Override loop vectorization (None = use codegen config default).
+    pub loop_vectorize: Option<bool>,
+    /// Override merge-functions (None = use codegen config default).
+    pub merge_functions: Option<bool>,
+}
+
+static PER_CGU_TUNABLES: OnceLock<Mutex<FxHashMap<String, PerCguTunables>>> = OnceLock::new();
+
+/// Store per-CGU tunables for a CGU name (called during partitioning).
+pub fn set_per_cgu_tunables(cgu_name: &str, tunables: PerCguTunables) {
+    let map = PER_CGU_TUNABLES.get_or_init(|| Mutex::new(FxHashMap::default()));
+    map.lock().unwrap().insert(cgu_name.to_string(), tunables);
+}
+
+/// Read per-CGU tunables for a CGU name (called during codegen).
+/// Returns `None` if no per-CGU tunables were set.
+pub fn get_per_cgu_tunables(cgu_name: &str) -> Option<PerCguTunables> {
+    PER_CGU_TUNABLES
+        .get()
+        .and_then(|m| m.lock().ok())
+        .and_then(|guard| guard.get(cgu_name).cloned())
+}

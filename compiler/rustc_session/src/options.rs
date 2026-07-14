@@ -2282,6 +2282,8 @@ options! {
         "path to a file mapping CGU names to optimization levels (format: `cgu_name O3|O2|Os|Oz` per line)"),
     cgu_opt_level_default: String = ("O3".to_string(), parse_string, [UNTRACKED],
         "default optimization level for CGUs not listed in `-Z cgu-opt-levels` (O3|O2|Os|Oz; default: O3)"),
+    per_cgu_tunables: Option<PathBuf> = (None, parse_opt_pathbuf, [UNTRACKED],
+        "path to a file mapping CGU names to codegen tunables (format: `cgu_name unroll=true|false slp=true|false loop=true|false merge=true|false` per line)"),
     check_cfg_all_expected: bool = (false, parse_bool, [UNTRACKED],
         "show all expected values in check-cfg diagnostics (default: no)"),
     checksum_hash_algorithm: Option<SourceFileHashAlgorithm> = (None, parse_cargo_src_file_hash, [TRACKED],

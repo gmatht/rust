@@ -882,7 +882,8 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
                 let unmatched_fn_count = unique_fn_count.saturating_sub(matched_fn_count);
 
                 let sidecar = opt_path.with_extension("fn_opt_levels.unmatched.log");
-                if let Ok(mut f) = fs::File::create(&sidecar) {
+                if let Ok(mut f) = fs::OpenOptions::new().append(true).create(true).open(&sidecar) {
+                    let _ = writeln!(f, "# crate: {}", tcx.crate_name(LOCAL_CRATE));
                     for (name, opt) in &unmatched_entries {
                         let _ = writeln!(f, "entry unmatched: {} {}", name, opt);
                     }
@@ -896,6 +897,16 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
                             if !entries.iter().any(|(entry_name, _)| entry_name == fn_name) {
                                 let _ = writeln!(f, "fn defaulting: {} {}", fn_name, fn_default);
                             }
+                        }
+                    }
+                }
+                // Also write matched entries
+                let matched_sidecar = opt_path.with_extension("fn_opt_levels.matched.log");
+                if let Ok(mut f) = fs::OpenOptions::new().append(true).create(true).open(&matched_sidecar) {
+                    let _ = writeln!(f, "# crate: {}", tcx.crate_name(LOCAL_CRATE));
+                    for fn_name in &matched_fns {
+                        if let Some((_, opt)) = entries.iter().find(|(entry_name, _)| entry_name == *fn_name) {
+                            let _ = writeln!(f, "{} {}", fn_name, opt);
                         }
                     }
                 }

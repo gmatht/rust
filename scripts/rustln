@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# rustln — Create a hardlink/symlink clone of the rust repo.
+#
+# Usage:  rustln <dest>
+#
+# Symlinks everything in the repo root (.) into <dest>/, except:
+#   - build/
+#   - target/  (any depth)
+#
+# Hardlinks build/pgo_data/** into <dest>/build/pgo_data/ so the PGO
+# profiles remain accessible without copying their bulk.
+#
+# The result is a lightweight clone that shares all source files with
+# the original via symlinks, but has its own build/ and target/ trees.
+# This lets you run separate builds without duplicating source.
+#
+# Example:
+#   cd /path/to/rust
+#   ./scripts/rustln /tmp/my-clone
+#   cd /tmp/my-clone
+#   python3 x.py build ...
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DEST="${1:?Usage: $0 <dest>}"
+
+if [ ! -d "$ROOT" ]; then
+    echo "Error: $ROOT is not a directory" >&2
+    exit 1
+fi
+
+if [ -e "$DEST" ]; then
+    echo "Error: $DEST already exists" >&2
+    exit 1
+fi
+
+mkdir -p "$DEST"
+DEST="$(cd "$DEST" && pwd)"
+
+# ---- Step 1: Symlink everything except build/ and target/ ----
+echo "Linking files from $ROOT to $DEST ..."
+count=0
+for entry in "$ROOT"/* "$ROOT"/.[!.]* "$ROOT"/..?*; do
+    base="$(basename "$entry")"
+
+    # Skip the entries we want to keep local
+    [ "$base" = "build" ] && continue
+    [ "$base" = "target" ] && continue
+    [ "$base" = "Cargo.lock" ] && continue
+
+    # Skip if it doesn't exist (globs can miss)
+    [ -e "$entry" ] || continue
+
+    if [ -L "$entry" ]; then
+        # Re-point symlinks so they work from the new location
+        target="$(readlink "$entry")"
+        if [[ "$target" == /* ]]; then
+            # Absolute symlink — just copy the link
+            ln -s "$target" "$DEST/$base"
+        else
+            # Relative symlink — rebase to new location
+            ln -s "$target" "$DEST/$base"
+        fi
+    else
+        ln -s "$entry" "$DEST/$base"
+    fi
+    count=$((count + 1))
+done
+echo "  Linked $count entries"
+
+# ---- Step 1.5: Copy Cargo.lock (not symlinked — avoids flock conflicts) ----
+if [ -f "$ROOT/Cargo.lock" ]; then
+    cp "$ROOT/Cargo.lock" "$DEST/Cargo.lock"
+    echo "  Copied Cargo.lock (independent copy)"
+fi
+
+# ---- Step 2: Hardlink build/pgo_data/ ----
+PGO_SRC="$ROOT/build/pgo_data"
+PGO_DST="$DEST/build/pgo_data"
+
+if [ -d "$PGO_SRC" ]; then
+    echo "Hardlinking $PGO_SRC to $PGO_DST ..."
+    mkdir -p "$DEST/build"
+
+    # Create an empty pgo_data dir in the dest, then hardlink all files
+    mkdir -p "$PGO_DST"
+
+    # Recursively find all files and directories in pgo_data
+    find "$PGO_SRC" -mindepth 1 -maxdepth 1 | while IFS= read -r src_entry; do
+        base="$(basename "$src_entry")"
+        dst_entry="$PGO_DST/$base"
+
+        if [ -f "$src_entry" ] || [ -L "$src_entry" ]; then
+            # Regular file or symlink: hardlink it
+            cp -l "$src_entry" "$dst_entry" 2>/dev/null || cp "$src_entry" "$dst_entry"
+        elif [ -d "$src_entry" ]; then
+            # Directory: create empty dir, then hardlink contents
+            mkdir -p "$dst_entry"
+            find "$src_entry" -type f | while IFS= read -r f; do
+                rel="${f#$src_entry/}"
+                mkdir -p "$(dirname "$PGO_DST/$rel")"
+                cp -l "$f" "$PGO_DST/$rel" 2>/dev/null || cp "$f" "$PGO_DST/$rel"
+            done
+            # Hardlink symlinks inside too
+            find "$src_entry" -type l | while IFS= read -r f; do
+                rel="${f#$src_entry/}"
+                mkdir -p "$(dirname "$PGO_DST/$rel")"
+                target="$(readlink "$f")"
+                if [[ "$target" == /* ]]; then
+                    ln -s "$target" "$PGO_DST/$rel"
+                else
+                    ln -s "$target" "$PGO_DST/$rel"
+                fi
+            done
+        fi
+    done
+
+    echo "  Hardlinked PGO data ($(find "$PGO_DST" -type f 2>/dev/null | wc -l) files)"
+else
+    echo "  (no build/pgo_data to hardlink)"
+    mkdir -p "$PGO_DST"
+fi
+
+# ---- Summary ----
+echo ""
+echo "Done. Clone at: $DEST"
+echo ""
+echo "  Source files are symlinks to $ROOT"
+echo "  build/ and target/ are local (not linked)"
+echo "  Cargo.lock is a plain copy (not symlinked — avoids flock conflicts)"
+echo "  build/pgo_data/ files are hardlinked (same inodes as $ROOT/build/pgo_data/)"
+echo ""
+echo "You can now run in the clone:"
+echo "  cd $DEST"
+echo "  python3 x.py build ..."

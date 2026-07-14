@@ -9,6 +9,9 @@
 #   LLVM codegen flags that favour size (no loop unrolling, conservative
 #   inlining, no auto-vectorisation).  These variants then compete in
 #   the per-crate selection alongside the standard levels.
+#
+# To summarise changes.
+#  $ grep -o O.,O. build/pgo_data/brute-quick-summary.csv | tr 'zs123' '45678' | sort | tr '45678' 'zs123' | uniq -c
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,13 +36,14 @@ mkdir -p "$BUILD_LOG_DIR"
 
 # Standard levels
 LEVELS=(Oz Os O1 O2 O3)
-# Speed ordering from least to most speed-optimised
+# Speed ordering from least to most speed-optimised.
+# Wide spacing (10 per level) leaves room for size-tweaks between levels.
 declare -A SPEED_RANK
 SPEED_RANK[Oz]=0
-SPEED_RANK[Os]=1
-SPEED_RANK[O1]=2
-SPEED_RANK[O2]=3
-SPEED_RANK[O3]=4
+SPEED_RANK[Os]=10
+SPEED_RANK[O1]=20
+SPEED_RANK[O2]=30
+SPEED_RANK[O3]=40
 
 # ---- Size-tweak configuration ----
 # These are O2/O3 variants with LLVM flags that inhibit code-size
@@ -48,46 +52,67 @@ SPEED_RANK[O3]=4
 # they are preferred only when strictly smaller.
 SIZE_TWEAKS=false
 
-# Base level + extra LLVM args for each tweak
+# Base level + per-cgu tunables for each tweak.
+# Tunables use the new -Z per-cgu-tunables=<file> flag to control LLVM
+# codegen options per CGU (unroll, slp-vectorize, loop-vectorize, merge-functions).
 declare -A TWEAK_BASE
-declare -A TWEAK_ARGS
+declare -A TWEAK_TUNABLES
 
 SIZE_TWEAK_NAMES=(
     "O2-no-unroll"
     "O2-no-unroll-no-vec"
-    "O2-conservative-inline"
     "O3-no-unroll"
     "O3-no-unroll-no-vec"
-    "O3-conservative-inline"
 )
 
 populate_tweak_tables() {
     # O2 tweaks
     TWEAK_BASE["O2-no-unroll"]="O2"
-    TWEAK_ARGS["O2-no-unroll"]="-C llvm-args=-unroll-threshold=0"
+    TWEAK_TUNABLES["O2-no-unroll"]="unroll=false"
 
     TWEAK_BASE["O2-no-unroll-no-vec"]="O2"
-    TWEAK_ARGS["O2-no-unroll-no-vec"]="-C llvm-args=-unroll-threshold=0 -C llvm-args=-vectorize-loops=0 -C llvm-args=-vectorize-slp=0"
-
-    TWEAK_BASE["O2-conservative-inline"]="O2"
-    TWEAK_ARGS["O2-conservative-inline"]="-C llvm-args=-inline-threshold=50"
+    TWEAK_TUNABLES["O2-no-unroll-no-vec"]="unroll=false slp=false loop=false"
 
     # O3 tweaks
     TWEAK_BASE["O3-no-unroll"]="O3"
-    TWEAK_ARGS["O3-no-unroll"]="-C llvm-args=-unroll-threshold=0"
+    TWEAK_TUNABLES["O3-no-unroll"]="unroll=false"
 
     TWEAK_BASE["O3-no-unroll-no-vec"]="O3"
-    TWEAK_ARGS["O3-no-unroll-no-vec"]="-C llvm-args=-unroll-threshold=0 -C llvm-args=-vectorize-loops=0 -C llvm-args=-vectorize-slp=0"
+    TWEAK_TUNABLES["O3-no-unroll-no-vec"]="unroll=false slp=false loop=false"
 
-    TWEAK_BASE["O3-conservative-inline"]="O3"
-    TWEAK_ARGS["O3-conservative-inline"]="-C llvm-args=-inline-threshold=50"
-
-    # Assign speed rank = same as base level (so a tweak only wins when it's
-    # strictly smaller than the plain base level — never when it's a tie).
+    # Assign speed rank between the base level and the next lower standard level.
+    # Tweaks that disable more features (e.g. no-unroll-no-vec) rank lower
+    # than those that disable fewer (e.g. no-unroll).
     for tn in "${SIZE_TWEAK_NAMES[@]}"; do
         base="${TWEAK_BASE[$tn]}"
-        SPEED_RANK["$tn"]=${SPEED_RANK[$base]}
+        tunables="${TWEAK_TUNABLES[$tn]}"
+        base_rank=${SPEED_RANK[$base]}
+        # Base penalty: -5 for disabling unroll
+        penalty=5
+        # Additional penalty for disabling vectorization
+        if [[ "$tunables" == *"slp=false"* ]] || [[ "$tunables" == *"loop=false"* ]]; then
+            penalty=$((penalty + 2))
+        fi
+        SPEED_RANK["$tn"]=$((base_rank - penalty))
     done
+}
+
+# Generate a per-CGU tunables file for a tweak.
+# Reads the PGSO baseline to get all crate names, then applies the tunable
+# settings to every crate.
+# Usage: gen_tunables_file <tweak_name> <out_file>
+gen_tunables_file() {
+    local tn="$1"
+    local out_file="$2"
+    local tunables="${TWEAK_TUNABLES[$tn]}"
+    rm -f "$out_file"
+    while IFS= read -r line; do
+        [ -z "$line" ] || [[ "$line" == \#* ]] && continue
+        local crate
+        crate=$(echo "$line" | sed 's/ [^ ]*$//')
+        echo "$crate $tunables" >> "$out_file"
+    done < "$PGSO_BASELINE"
+    echo "  Generated $(wc -l < "$out_file") tunable entries"
 }
 
 is_tweak() {
@@ -102,6 +127,7 @@ EXISTING=false
 REBUILD_DIR=""
 PARALLEL=false
 SKIP_EXISTING=false
+CLEAN_SIZE_TWEAKS=false
 extra_rustflags=""
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -109,6 +135,7 @@ while [[ $# -gt 0 ]]; do
         --rebuild-dir) REBUILD_DIR="$2"; shift 2 ;;
         --parallel) PARALLEL=true; shift ;;
         --size-tweaks) SIZE_TWEAKS=true; shift ;;
+        --clean-size-tweaks) CLEAN_SIZE_TWEAKS=true; SIZE_TWEAKS=true; shift ;;
         --skip-existing) SKIP_EXISTING=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -121,12 +148,36 @@ if [ "$SIZE_TWEAKS" = true ]; then
     echo "Size tweaks enabled: ${SIZE_TWEAK_NAMES[*]}"
 fi
 
+# --clean-size-tweaks: remove existing tweak data before rebuilding
+if [ "$CLEAN_SIZE_TWEAKS" = true ]; then
+    for tn in "${SIZE_TWEAK_NAMES[@]}"; do
+        echo "  Cleaning $tn ..."
+        # Remove from results CSV
+        if [ -f "$RESULTS_LOG" ]; then
+            grep -v "^[0-9]*,$tn," "$RESULTS_LOG" > "${RESULTS_LOG}.tmp" 2>/dev/null || true
+            mv "${RESULTS_LOG}.tmp" "$RESULTS_LOG" 2>/dev/null || true
+        fi
+        # Remove from crates CSV
+        if [ -f "$CRATES_LOG" ]; then
+            grep -v "^$tn," "$CRATES_LOG" > "${CRATES_LOG}.tmp" 2>/dev/null || true
+            mv "${CRATES_LOG}.tmp" "$CRATES_LOG" 2>/dev/null || true
+        fi
+        # Remove per-level files
+        rm -f "${RESULTS_LOG}-${tn}" "${CRATES_LOG}-${tn}"
+        # Remove build directory
+        rm -rf "${BUILD_DIR}-${tn}"
+        # Remove CGU file and tunables file
+        rm -f "$PGO_DATA/cgu_opt_levels_all_${tn}.txt"
+        rm -f "$PGO_DATA/cgu_tunables_${tn}.txt"
+    done
+fi
+
 # Validate rebuild-dir argument
 if [ -n "$REBUILD_DIR" ]; then
     case "$REBUILD_DIR" in
         Oz|Os|O1|O2|O3|final) ;;
-        O2-no-unroll|O2-no-unroll-no-vec|O2-conservative-inline) ;;
-        O3-no-unroll|O3-no-unroll-no-vec|O3-conservative-inline) ;;
+        O2-no-unroll|O2-no-unroll-no-vec) ;;
+        O3-no-unroll|O3-no-unroll-no-vec) ;;
         *) echo "Invalid --rebuild-dir value: '$REBUILD_DIR'"; exit 1 ;;
     esac
 fi
@@ -273,6 +324,8 @@ build_and_measure() {
             cd '$ROOT'
             RUSTFLAGS_NOT_BOOTSTRAP='$rustflags' \
             python3 x.py build --stage 2 compiler/rustc library/std \
+                --set build.rustc="$TEMPLATE_DIR/x86_64-unknown-linux-gnu/stage1/bin/rustc" \
+                --set build.cargo="$(which cargo)" \
                 --set rust.lto='off' \
                 --build-dir '$build_dir' -j '${PARALLEL_JOBS}' > '$logfile' 2>&1
             rc=\$?
@@ -474,6 +527,7 @@ else
             rm -f "$dest/lock"
             echo -n "$$" > "$dest/lock" 2>/dev/null || true
         fi
+
         LEVEL_DIRS+=("$level:$dest")
 
         if [ "$PARALLEL" = true ]; then
@@ -500,7 +554,7 @@ fi
 if [ "$SIZE_TWEAKS" = true ]; then
     for tn in "${SIZE_TWEAK_NAMES[@]}"; do
         base="${TWEAK_BASE[$tn]}"
-        extra="${TWEAK_ARGS[$tn]}"
+        tunables_file="$PGO_DATA/cgu_tunables_${tn}.txt"
         dest="${BUILD_DIR}-${tn}"
         base_dir="${BUILD_DIR}-${base}"
 
@@ -512,17 +566,20 @@ if [ "$SIZE_TWEAKS" = true ]; then
         fi
 
         echo ""
-        echo "=== Creating $dest (hard-linked from $base_dir) ==="
+        echo "=== Creating $dest (hard-linked from template) ==="
         if [ -d "$dest" ]; then
             rm -rf "$dest"
         fi
-        if [ -d "$base_dir" ]; then
-            cp -alT "$base_dir" "$dest"
+        # Clone from template (LTO=off), not from base level (may have LTO=fat).
+        # This avoids a config-mismatch-triggered stage1 rebuild.
+        if [ -d "$TEMPLATE_DIR" ]; then
+            cp -alT "$TEMPLATE_DIR" "$dest"
             # Break hard link on lock file for parallel safety
             if [ -f "$dest/lock" ]; then
                 rm -f "$dest/lock"
                 echo -n "$$" > "$dest/lock" 2>/dev/null || true
             fi
+
         else
             echo "  ERROR: base dir $base_dir not found, skipping $tn"
             continue
@@ -532,7 +589,8 @@ if [ "$SIZE_TWEAKS" = true ]; then
         rm -f "$PGO_DATA/cgu_opt_levels_all_${tn}.txt"
         ln -s "cgu_opt_levels_all_${base}.txt" "$PGO_DATA/cgu_opt_levels_all_${tn}.txt"
 
-        extra_rustflags="$extra"
+        gen_tunables_file "$tn" "$tunables_file"
+        extra_rustflags="-Z per-cgu-tunables=$tunables_file"
         if [ "$PARALLEL" = true ]; then
             build_and_measure "$tn" "$dest" &
         else
