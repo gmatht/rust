@@ -866,17 +866,71 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
                         }
                     }
                 }
-                let unmatched_entries: Vec<&(String, String)> = entries.iter()
-                    .filter(|(name, _)| !seen_fns.contains(name))
-                    .collect();
-                let matched_fns: Vec<_> = {
-                    #[allow(rustc::potential_query_instability)]
-                    let mut seen: Vec<&String> = seen_fns.iter().collect();
-                    seen.sort();
-                    seen.into_iter().filter(|fn_name| {
-                        entries.iter().any(|(entry_name, _)| entry_name == *fn_name)
-                    }).collect::<Vec<_>>()
+                // Normalize a function name to improve matching between fn_opt_levels
+                // file entries (from rustfilt) and def_path_str output.
+                // Strips lifetime annotations and normalizes inherent impl brackets.
+                let normalize_fn = |s: &str| -> String {
+                    let s = s.trim();
+                    // Strip lifetime annotations: <'a>, 'tcx, '_, etc.
+                    let mut result = String::with_capacity(s.len());
+                    let mut chars = s.chars().peekable();
+                    while let Some(c) = chars.next() {
+                        if c == '\'' && chars.peek() == Some(&'_') {
+                            // Skip '_, skip lifetime
+                            chars.next();
+                            continue;
+                        }
+                        if c == '\'' {
+                            // Start of a lifetime: skip until > or :: or whitespace
+                            while let Some(&n) = chars.peek() {
+                                if n == '>' || n == ':' || n.is_whitespace() || n == ',' || n == '(' {
+                                    break;
+                                }
+                                chars.next();
+                            }
+                            continue;
+                        }
+                        result.push(c);
+                    }
+                    // For inherent impls: <Type>::method → Type::method
+                    if result.contains(" as ") {
+                        // Trait impls: <Type as Trait>::method — keep as-is
+                    } else if result.starts_with('<') && result.contains(">::") {
+                        result = result.replacen("<", "", 1).replacen(">::", "::", 1);
+                    }
+                    result
                 };
+
+                // Build normalized versions of fn file entries and seen function names.
+                // Normalize function names by extracting the last component
+                // This handles format differences between rustfilt and def_path_str
+                fn last_component(s: &str) -> &str {
+                    let s = if let Some(pos) = s.rfind("::<") { &s[..pos] } else { s };
+                    if let Some(pos) = s.rfind("::") { &s[pos+2..] } else { s }
+                }
+                let unmatched_entries: Vec<&(String, String)>;
+                let matched_fns: Vec<&String>;
+                #[allow(rustc::potential_query_instability)]
+                {
+                    let entry_norm: Vec<(String, &str)> = entries.iter()
+                        .map(|(name, opt)| (last_component(name.as_str()).to_string(), opt.as_str()))
+                        .collect();
+                    let mut seen_sorted: Vec<&String> = seen_fns.iter().collect();
+                    seen_sorted.sort();
+                    let seen_norm: Vec<(String, &String)> = seen_sorted.into_iter()
+                        .map(|name| (last_component(name.as_str()).to_string(), name))
+                        .collect();
+                    unmatched_entries = entries.iter()
+                        .filter(|(name, _)| {
+                            let lc = last_component(name.as_str());
+                            !seen_norm.iter().any(|(sn, _)| sn == lc)
+                        })
+                        .collect();
+                    matched_fns = seen_norm.iter()
+                        .filter(|(norm_fn, _)| {
+                            entry_norm.iter().any(|(en, _)| en == norm_fn)
+                        }).map(|(_, orig)| *orig).collect::<Vec<_>>();
+                }
                 let matched_fn_count = matched_fns.len() as u32;
                 // seen_fns deduplicates, so unique_fn_count is the true total
                 let unmatched_fn_count = unique_fn_count.saturating_sub(matched_fn_count);

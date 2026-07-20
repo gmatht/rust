@@ -179,8 +179,10 @@ where
     //
     // The per-CGU opt level is set both pre-link (cgu.set_opt_level) and
     // stored in the side channel for ThinLTO post-link (lto.rs).
-    if tcx.sess.opts.unstable_opts.hot_cold_split {
-        if let Some(ref opt_path) = tcx.sess.opts.unstable_opts.cgu_opt_levels {
+    // CGU opt-levels are applied regardless of hot-cold-split.
+    // Without hot-cold-split, each crate has a single CGU, so
+    // cgu-opt-levels acts as per-crate opt-level assignment.
+    if let Some(ref opt_path) = tcx.sess.opts.unstable_opts.cgu_opt_levels {
             let opt_map = read_cgu_opt_levels(opt_path, tcx.sess);
             let default_cgu_opt = parse_opt_level_str(
                 &tcx.sess.opts.unstable_opts.cgu_opt_level_default,
@@ -232,7 +234,6 @@ where
                 ));
             }
         }
-    }
 
     // Per-CGU codegen tunables from -Z per-cgu-tunables=<file>.
     // The file maps CGU names to unroll/slp/loop/merge booleans (format:

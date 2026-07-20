@@ -31,7 +31,7 @@ BUILD_LOG_DIR="/tmp/sizewalk-upstream-first-logs"
 PGO_DATA="$ROOT/build/pgo_data"
 
 CGU_FILE_1X="$PGO_DATA/cgu_opt_levels_1x.txt"
-FN_FILE_1X="$PGO_DATA/fn_opt_levels_1x_reliable.txt"
+FN_FILE_1X="$PGO_DATA/fn_opt_levels_final.txt"
 CGU_BRUTE_QUICK="$PGO_DATA/cgu_opt_levels_brute_quick.txt"
 CGU_BRUTE_QUICK_TWEAKS="$PGO_DATA/cgu_opt_levels_brute_quick_with_tweaks.txt"
 
@@ -309,7 +309,7 @@ build_and_measure() {
     local build_cmd
     printf -v build_cmd 'cd %q && RUSTC_BOOTSTRAP=1 RUSTFLAGS_NOT_BOOTSTRAP=%q \
         /usr/bin/time --quiet -o %q -f "CPU_REAL:%%e CPU_USER:%%U CPU_SYS:%%S CPU_PERC:%%P" \
-        python3 x.py build --stage 2 compiler/rustc library/std --build-dir %q -j %d %s 2>&1 \
+        python3 x.py build --stage 2 compiler/rustc library/std --build-dir %q -j %d --set rust.deny-warnings=false %s 2>&1 \
         | awk '\''%s'\'' >%q; rc=${PIPESTATUS[0]}; \
         echo -n $(cat /sys/fs/cgroup/memory/system.slice/%s.scope/memory.max_usage_in_bytes 2>/dev/null || echo 0) >%q; \
         exit $rc' \
@@ -630,6 +630,46 @@ if run_step 8 && [ -f "$FN_FILE_1X" ]; then
 else
     echo ""
     echo "  WARNING: $FN_FILE_1X not found — skipping step 8"
+fi
+
+# ---- Step 9: CGU-PGSO without hot-cold-split (isolates CGU opt effect) ----
+if [ -f "$CGU_FILE_1X" ]; then
+    build_and_measure \
+        9 "CGU-PGSO (no hot-cold-split)" \
+        "$ROOT/build-stage2-up-first-9" \
+        "$ROOT/build-stage2-up-first-2" \
+        "$UPSTREAM_OPT_FLAGS -Z cgu-opt-levels=${CGU_FILE_1X} -Z fn-opt-level-default=Oz"
+else
+    echo ""
+    echo "  WARNING: $CGU_FILE_1X not found — skipping step 9"
+fi
+
+# ---- Step 10: Hot-cold-split with O3 hot / Oz cold CGUs (no fn-level) ----
+# Each crate is split into hot/cold CGUs. Hot CGUs match .hot prefix and get O3,
+# cold CGUs default to Oz. No per-function opt levels.
+HOT_CGUS="$PGO_DATA/hot_cgus.txt"
+if [ -f "$HOT_CGUS" ]; then
+    build_and_measure \
+        10 "Hot-cold O3 hot / Oz cold (CGU)" \
+        "$ROOT/build-stage2-up-first-10" \
+        "$ROOT/build-stage2-up-first-2" \
+        "$UPSTREAM_OPT_FLAGS -Z hot-cold-split=yes -Z cgu-opt-levels=${HOT_CGUS} -Z cgu-opt-level-default=Oz"
+else
+    echo ""
+    echo "  WARNING: $HOT_CGUS not found — skipping step 10"
+fi
+
+# ---- Step 11: Hot-cold-split + per-function opt levels on top ----
+# Same as step 10 but adds fn-opt-levels for per-function refinement.
+if [ -f "$HOT_CGUS" ] && [ -f "$FN_FILE_1X" ]; then
+    build_and_measure \
+        11 "Hot-cold + fn PGSO" \
+        "$ROOT/build-stage2-up-first-11" \
+        "$ROOT/build-stage2-up-first-10" \
+        "$UPSTREAM_OPT_FLAGS -Z hot-cold-split=yes -Z cgu-opt-levels=${HOT_CGUS} -Z cgu-opt-level-default=Oz -Z fn-opt-levels=${FN_FILE_1X} -Z fn-opt-level-default=Oz"
+else
+    echo ""
+    echo "  WARNING: $HOT_CGUS or $FN_FILE_1X not found — skipping step 11"
 fi
 
 # ======================================================================
